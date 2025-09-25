@@ -462,7 +462,7 @@ def get_vllm_version() -> str:
             maca_version_str = str(get_maca_version())
             torch_version = torch.__version__
             major_minor_version = ".".join(torch_version.split(".")[:2])
-            version += f"{sep}maca{maca_version_str}{sep}torch{major_minor_version}"
+            version += f"{sep}maca{maca_version_str}.torch{major_minor_version}"
     else:
         raise RuntimeError("Unknown runtime environment")
 
@@ -586,8 +586,8 @@ class custom_install(install):
             "vllm_metax/patch/vllm_substitution/fp8_utils.py":
             vllm_dist_path /
             "model_executor/layers/quantization/utils/fp8_utils.py",
-            "vllm_metax/patch/vllm_substitution/fused_moe.py":
-            vllm_dist_path / "model_executor/layers/fused_moe/fused_moe.py",
+            "vllm_metax/patch/vllm_substitution/utils.py":
+            vllm_dist_path / "model_executor/layers/fla/ops/utils.py",
         }
 
         for src_path, dest_path in files_to_copy.items():
