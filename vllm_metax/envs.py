@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     CMAKE_BUILD_TYPE: Optional[str] = None
     VERBOSE: bool = False
     MACA_VLLM_USE_TN_2_NN: bool = True
+    MACA_DP_OPT: bool = False
 
 environment_variables: dict[str, Callable[[], Any]] = {
 
@@ -75,6 +76,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # if set, enable loading weight by transpose
     "MACA_VLLM_USE_TN_2_NN":
     lambda: os.environ.get("MACA_VLLM_USE_TN_2_NN", "0") == "1",
+
+    # if set, enable combine allreduce all2all
+    "MACA_DP_OPT":
+    lambda: bool(os.environ.get("MACA_DP_OPT", 0)),
 }
 
 # end-env-vars-definition

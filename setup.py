@@ -502,6 +502,7 @@ package_data = {
         "model_executor/layers/fused_moe/configs/*.json",
         "model_executor/layers/quantization/utils/configs/*.json",
         "attention/backends/configs/*.json",
+        "patch/hotfix/*.patch",
     ]
 }
 
