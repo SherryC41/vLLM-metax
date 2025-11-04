@@ -22,7 +22,8 @@ from vllm.utils import cdiv
 from vllm_metax.v1.attention.backends.mla.common import MLACommonBaseImpl
 from vllm.v1.attention.backends.utils import (AttentionCGSupport,
                                               AttentionMetadataBuilder,
-                                              CommonAttentionMetadata)
+                                              CommonAttentionMetadata,
+                                              split_decodes_and_prefills)
 from vllm.v1.kv_cache_interface import AttentionSpec
 
 if TYPE_CHECKING:
@@ -271,7 +272,7 @@ def triton_convert_req_index_to_global_index(
 class FlashMLASparseMetadataBuilder(
         AttentionMetadataBuilder[FlashMLASparseMetadata]):
     cudagraph_support: ClassVar[AttentionCGSupport] = \
-        AttentionCGSupport.UNIFORM_BATCH
+        AttentionCGSupport.NEVER
 
     def __init__(self, kv_cache_spec: AttentionSpec, layer_names: list[str],
                  vllm_config: VllmConfig, device: torch.device):
@@ -345,33 +346,38 @@ class FlashMLASparseMetadataBuilder(
         req_id_per_token = self.req_id_per_token_buffer[:num_tokens]
 
         fp8_extra_metadata = None
-        if self.use_fp8_kv_cache:
+
+        num_decodes, num_prefills, num_decode_tokens, num_prefill_tokens = \
+            split_decodes_and_prefills(common_attn_metadata)
+
+        if num_prefills == 0 and num_decodes > 0:
             tile_scheduler_metadata, num_splits = get_mla_metadata(
-                cache_seqlens=self.topk_tokens_tensor,
-                num_q_tokens_per_head_k=num_tokens * self.num_heads,
+                cache_seqlens=torch.full((num_tokens,), self.topk_tokens,
+                                               device=self.device,
+                                               dtype=torch.int32),
+                num_q_tokens_per_head_k=self.num_heads,
                 topk=self.topk_tokens,
                 num_heads_q=self.num_heads,
                 num_heads_k=1,
-                is_fp8_kvcache=True,
+                is_fp8_kvcache=False,
             )
 
-            num_sm_parts = tile_scheduler_metadata.size(0)
-            # Copy to persistent buffer for full-CG support
-            tile_scheduler_metadata_buffer = \
-                self.tile_scheduler_metadata_buffer[:num_sm_parts]
-            tile_scheduler_metadata_buffer.copy_(tile_scheduler_metadata)
-            self.num_splits_buffer.copy_(num_splits)
-
             fp8_extra_metadata = FlashMLASparseMetadata.FP8KernelMetadata(
-                scheduler_metadata=tile_scheduler_metadata_buffer,
-                num_splits=self.num_splits_buffer,
+                scheduler_metadata=tile_scheduler_metadata,
+                num_splits=num_splits,
                 # cache_lens and block_table are basically unused in sparse case
                 # but the decode kernel will treat -1 and indices >= cache_lens
                 # as invalid so we make sure cache_lens is large enough to not
                 # accidentally mark indices invalid, we will use -1 exclusively
                 # to mark invalid indices
-                cache_lens=self.max_model_len_tensor,
-                dummy_block_table=self.dummy_block_table)
+                cache_lens=torch.full((num_tokens,), 
+                                        self.model_config.max_model_len,
+                                        device=self.device,
+                                        dtype=torch.int32),
+                dummy_block_table=torch.empty(
+                        (num_tokens, 0), dtype=torch.int32, device=self.device
+                    ),
+                )
 
         metadata = FlashMLASparseMetadata(
             num_reqs=common_attn_metadata.num_reqs,
@@ -450,15 +456,15 @@ class FlashMLASparseImpl(MLACommonBaseImpl[FlashMLASparseMetadata]):
         extra_metadata = attn_metadata.fp8_extra_metadata
 
         _attn_out, _ = flash_mla_with_kvcache(
-            q=q.unsqueeze(0),  # unsqueeze to add batch_dim
-            k_cache=kv_c_and_k_pe_cache.view(torch.uint8).unsqueeze(-2),
+            q=q.unsqueeze(1),  # unsqueeze to add seqlen dim of 1(decode)
+            k_cache=kv_c_and_k_pe_cache.unsqueeze(-2),
             block_table=extra_metadata.dummy_block_table,
             head_dim_v=512,
             cache_seqlens=extra_metadata.cache_lens,
             tile_scheduler_metadata=extra_metadata.scheduler_metadata,
             num_splits=extra_metadata.num_splits,
-            is_fp8_kvcache=True,
-            indices=topk_indices.unsqueeze(0),  # unsqueeze to add batch_dim
+            is_fp8_kvcache=False,
+            indices=topk_indices.unsqueeze(1),  # unsqueeze to add seqlen dim of 1(decode)
             softmax_scale=self.softmax_scale,
         )
 
@@ -533,7 +539,7 @@ class FlashMLASparseImpl(MLACommonBaseImpl[FlashMLASparseMetadata]):
                 scale=layer._k_scale,
             )
 
-        if self.kv_cache_dtype != "fp8_ds_mla":
+        if attn_metadata.fp8_extra_metadata is None:
             attn_out = self._forward_bf16_kv(q, kv_cache, topk_indices_global,
                                              attn_metadata)
         else:
