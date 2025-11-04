@@ -1,20 +1,19 @@
 # SPDX-License-Identifier: Apache-2.0
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional  # noqa: UP035
 
 import torch
 from torch.library import Library
-from vllm import utils
-from vllm.utils import vllm_lib, supports_custom_op
+from vllm.utils.torch_utils import vllm_lib, supports_custom_op
 
 
 def maca_direct_register_custom_op(
-        op_name: str,
-        op_func: Callable,
-        mutates_args: Optional[list[str]] = None,
-        fake_impl: Optional[Callable] = None,
-        target_lib: Optional[Library] = None,
-        dispatch_key: Optional[str] = None,
-        tags: tuple[torch.Tag, ...] = (),
+    op_name: str,
+    op_func: Callable,
+    mutates_args: Optional[list[str]] = None,
+    fake_impl: Optional[Callable] = None,
+    target_lib: Optional[Library] = None,
+    dispatch_key: Optional[str] = None,
+    tags: tuple[torch.Tag, ...] = (),
 ):
     """
     `torch.library.custom_op` can have significant overhead because it
@@ -33,12 +32,14 @@ def maca_direct_register_custom_op(
     """
     if not supports_custom_op():
         from vllm.platforms import current_platform
+
         assert not current_platform.is_cuda_alike(), (
             "cuda platform needs torch>=2.4 to support custom op, "
             "chances are you are using an old version of pytorch "
             "or a custom build of pytorch. It is recommended to "
             "use vLLM in a fresh new environment and let it install "
-            "the required dependencies.")
+            "the required dependencies."
+        )
         return
 
     if mutates_args is None:
@@ -46,21 +47,23 @@ def maca_direct_register_custom_op(
 
     if dispatch_key is None:
         from vllm.platforms import current_platform
+
         dispatch_key = current_platform.dispatch_key
 
     for k, v in op_func.__annotations__.items():
         if v == list[int]:
-            op_func.__annotations__[k] = List[int]
+            op_func.__annotations__[k] = List[int]  # noqa: UP035 UP006
         if v == Optional[list[int]]:
-            op_func.__annotations__[k] = Optional[List[int]]
+            op_func.__annotations__[k] = Optional[List[int]]  # noqa: UP035 UP006
         # TODO: add more type convert here if needed.
     import torch.library
+
     if hasattr(torch.library, "infer_schema"):
-        schema_str = torch.library.infer_schema(op_func,
-                                                mutates_args=mutates_args)
+        schema_str = torch.library.infer_schema(op_func, mutates_args=mutates_args)
     else:
         # for pytorch 2.4
         import torch._custom_op.impl
+
         schema_str = torch._custom_op.impl.infer_schema(op_func, mutates_args)
     my_lib = target_lib or vllm_lib
     my_lib.define(op_name + schema_str, tags=tags)
@@ -69,4 +72,7 @@ def maca_direct_register_custom_op(
         my_lib._register_fake(op_name, fake_impl)
 
 
-utils.direct_register_custom_op = maca_direct_register_custom_op
+print("Applying Maca hotfix for direct_register_custom_op...")
+import vllm.utils.torch_utils  # noqa: E402
+
+vllm.utils.torch_utils.direct_register_custom_op = maca_direct_register_custom_op
