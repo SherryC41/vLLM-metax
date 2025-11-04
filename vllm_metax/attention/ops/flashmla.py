@@ -58,9 +58,13 @@ def get_mla_metadata(
     - num_splits: (batch_size + 1), dtype torch.int32.
     """
     # /------------------------  Metax Modification -------------------------\
-    return flash_mla.flash_mla_interface.get_mla_metadata(
-        cache_seqlens, num_q_tokens_per_head_k, num_heads_k,
-        num_heads_q, is_fp8_kvcache, topk)
+    if topk is not None:
+        return flash_mla.flash_mla_interface.get_mla_metadata(
+            cache_seqlens, num_q_tokens_per_head_k, num_heads_k,
+            num_heads_q, is_fp8_kvcache, topk)
+    else:
+        return flash_mla.flash_mla_interface.get_mla_metadata(
+            cache_seqlens, num_q_tokens_per_head_k, num_heads_k)
     # \------------------------- Metax Modification -------------------------/
 
 
