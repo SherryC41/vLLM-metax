@@ -448,7 +448,7 @@ def always_hash(version: ScmVersion) -> str:
     date_str = datetime.now().strftime("%Y%m%d")
     if version.node is not None:
         short_hash = version.node[:7]  # short commit id
-        return f"g{short_hash}.d{date_str}"
+        return f"{short_hash}.d{date_str}"
     return f"unknown.{date_str}"
 
 
