@@ -54,3 +54,20 @@ def indexer_k_quant_and_cache(k: torch.Tensor, kv_cache: torch.Tensor,
     else:
         torch.ops._C_cache_ops.indexer_k_quant_and_cache(
             k, kv_cache, slot_mapping, quant_block_size, kv_cache_dtype)
+
+def cp_gather_indexer_k_quant_cache(
+    kv_cache: torch.Tensor,
+    dst_k: torch.Tensor,
+    dst_scale: torch.Tensor,
+    block_table: torch.Tensor,
+    cu_seq_lens: torch.Tensor,
+) -> None:
+    
+    if dst_k.dtype in (torch.bfloat16, torch.float16) or dst_scale is None:
+        torch.ops._C_cache_ops.cp_gather_indexer_k_cache(
+            kv_cache, dst_k, block_table, cu_seq_lens
+        )
+    else:
+        torch.ops._C_cache_ops.cp_gather_indexer_k_quant_cache(
+            kv_cache, dst_k, dst_scale, block_table, cu_seq_lens
+        )

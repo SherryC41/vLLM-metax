@@ -506,49 +506,6 @@ class DeepseekV32IndexerCache(torch.nn.Module, AttentionLayerBase):
         return DeepseekV32IndexerBackend
 
 
-@torch.inference_mode()
-def cp_gather_indexer_k_quant_cache(
-    kv_cache,  # [num_blocks, block_size, head_dim + 1]
-    dst_value,  # [cu_seq_lens[-1], head_dim]
-    block_table,  # [batch_size, num_blocks]
-    cu_seq_lens,  # [batch_size + 1, ]
-    batch_size,
-):
-    num_blocks, block_size, _ = kv_cache.shape
-    head_dim = dst_value.shape[-1]
-    kv_cache = kv_cache.view(num_blocks, -1)
-
-    expected_value = []
-    for b in range(batch_size):
-        s = cu_seq_lens[b + 1] - cu_seq_lens[b]
-        if s == 0:
-            continue
-        tot = cdiv(s, block_size)
-        blocks = block_table[b, :tot]
-
-        value = []
-        full_block = torch.arange(tot - 1, device=kv_cache.device, dtype=torch.int32)
-        non_remaining_value = kv_cache[
-            blocks[full_block], : block_size * head_dim
-        ].view(-1, head_dim)
-
-        remaining = s - (tot - 1) * block_size
-
-        value = torch.cat(
-            [
-                non_remaining_value,
-                kv_cache[blocks[-1], : remaining * head_dim].view(-1, head_dim),
-            ],
-            dim=0,
-        )
-
-        expected_value.append(value)
-
-    gather_value = torch.cat(expected_value, dim=0).view(-1, head_dim)
-    gather_value = gather_value.view(torch.bfloat16)
-    dst_value.copy_(gather_value)
-
-
 def sparse_attn_indexer(
     hidden_states: torch.Tensor,
     k_cache_prefix: str,
@@ -607,12 +564,13 @@ def sparse_attn_indexer(
                 device=k_bf16.device,
                 dtype=torch.bfloat16,
             )
-            cp_gather_indexer_k_quant_cache(
+            k_scale = None
+            mx_ops.cp_gather_indexer_k_quant_cache(
                 kv_cache,
                 _k_bf16,
+                k_scale,
                 chunk.block_table,
                 chunk.cu_seq_lens,
-                chunk.num_reqs,
             )
             logits = bf16_mqa_logits(
                 q_bf16[chunk.token_start : chunk.token_end],
