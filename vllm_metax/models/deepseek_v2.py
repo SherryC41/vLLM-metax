@@ -581,20 +581,16 @@ def sparse_attn_indexer(
             )
             num_rows = logits.shape[0]
             assert topk_tokens == 2048, "top_k_per_row assumes size 2048"
-            topk_indices = logits.topk(min(topk_tokens, logits.shape[-1]), dim=-1)[1]
-            topk_indices -= chunk.cu_seqlen_ks[:, None]
-            mask_lo = topk_indices >= 0
-            mask_hi = (
-                topk_indices - (chunk.cu_seqlen_ke - chunk.cu_seqlen_ks)[:, None] < 0
+            topk_indices = topk_indices_buffer[
+                chunk.token_start : chunk.token_end, :topk_tokens
+            ]
+            mx_ops.top_k_per_row(
+                logits,
+                chunk.cu_seqlen_ks,
+                chunk.cu_seqlen_ke,
+                topk_indices,
+                num_rows,
             )
-            mask = torch.full_like(
-                topk_indices, False, dtype=torch.bool, device=topk_indices.device
-            )
-            mask = mask_lo & mask_hi
-            topk_indices = topk_indices.masked_fill(~mask, -1)
-            topk_indices_buffer[
-                chunk.token_start : chunk.token_end, : topk_indices.shape[-1]
-            ] = topk_indices.to(dtype=torch.int32)
 
     if has_decode:
         decode_metadata = attn_metadata.decode
@@ -628,31 +624,17 @@ def sparse_attn_indexer(
             decode_metadata.schedule_metadata,
             max_model_len,
         )
-        # padded query len
-        current_device = padded_q_bf16_decode_tokens.device
-        padded_num_tokens = batch_size * next_n
-        positions = (
-            torch.arange(max_model_len, device=current_device)
-            .unsqueeze(0)
-            .expand(batch_size * next_n, -1)
+        num_rows = logits.shape[0]
+        assert topk_tokens == 2048, "top_k_per_row assumes size 2048"
+        topk_indices = topk_indices_buffer[:num_decode_tokens, :topk_tokens]
+
+        mx_ops.top_k_per_row_decode(
+            logits,
+            next_n,
+            decode_metadata.seq_lens,
+            topk_indices,
+            num_rows,
         )
-        row_indices = torch.arange(padded_num_tokens, device=current_device) // next_n
-        next_n_offset = (
-            torch.arange(padded_num_tokens, device=padded_q_bf16_decode_tokens.device)
-            % next_n
-        )
-        index_end_pos = (
-            decode_metadata.seq_lens[row_indices] - next_n + next_n_offset
-        ).unsqueeze(1)
-        # index_end_pos: [B * N, 1]
-        mask = positions <= index_end_pos
-        # mask: [B * N, L]
-        logits = logits.masked_fill(~mask, float("-inf"))
-        topk_indices = logits.topk(topk_tokens, dim=-1)[1].to(torch.int32)  # [B * N, K]
-        # ensure we don't set indices for the top k
-        # that is out of range(masked already)
-        # this will happen if context length is shorter than K
-        topk_indices[topk_indices > index_end_pos] = -1
         if decode_metadata.requires_padding:
             # if padded, we need to unpack
             # the topk indices removing padded tokens
