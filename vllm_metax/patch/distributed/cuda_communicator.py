@@ -27,7 +27,7 @@ class MacaCommunicator(CudaCommunicator):
             all2all_backend = envs.VLLM_ALL2ALL_BACKEND
             if mx_envs.MACA_DP_OPT and (all2all_backend == "naive" \
                 or all2all_backend == "allgather_reducescatter") :
-                from .all2all import CoArAll2AllManager
+                from vllm_metax.distributed.device_communicators.all2all import CoArAll2AllManager
                 self.all2all_manager = CoArAll2AllManager(
                     self.cpu_group)
                 logger.info("Using combine_allreduce manager for opt.")

@@ -2,4 +2,4 @@
 
 from packaging.version import parse
 
-from . import chunk_delta_h, hook_register, rotary_embedding, utils
+from . import chunk_delta_h, hook_register, rotary_embedding, utils, fused_moe_layer, shared_fused_moe

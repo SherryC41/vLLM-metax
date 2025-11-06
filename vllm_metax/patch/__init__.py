@@ -7,4 +7,3 @@ from . import device_allocator
 from . import model_executor
 from . import oot
 from . import sample
-from . import dp_opt
