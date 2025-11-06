@@ -1017,7 +1017,7 @@ __global__ void cp_gather_indexer_k_cache_kernel(
     const int64_t cache_token_stride,     // stride for each token in kv_cache
     const int64_t cache_block_size,  // num_tokens for each block in kv_cache
     const int num_blocks,            // number of blocks
-    const int num_tokens,            // number of tokens
+    const int num_tokens             // number of tokens
 ) {
   constexpr int VEC_SIZE = sizeof(float4) / sizeof(char);
   const int token_idx = blockIdx.x * blockDim.y + threadIdx.y;
@@ -1243,17 +1243,17 @@ void cp_gather_indexer_k_cache(
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
   if (num_tokens < 32) {
-    CALL_CP_GATHER_INDEXER_K_QUANT_CACHE(1);
+    CALL_CP_GATHER_INDEXER_K_CACHE(1);
   } else if (num_tokens < 64) {
-    CALL_CP_GATHER_INDEXER_K_QUANT_CACHE(2);
+    CALL_CP_GATHER_INDEXER_K_CACHE(2);
   } else if (num_tokens < 128) {
-    CALL_CP_GATHER_INDEXER_K_QUANT_CACHE(4);
+    CALL_CP_GATHER_INDEXER_K_CACHE(4);
   } else if (num_tokens < 256) {
-    CALL_CP_GATHER_INDEXER_K_QUANT_CACHE(8);
+    CALL_CP_GATHER_INDEXER_K_CACHE(8);
   } else if (num_tokens < 512) {
-    CALL_CP_GATHER_INDEXER_K_QUANT_CACHE(16);
+    CALL_CP_GATHER_INDEXER_K_CACHE(16);
   } else {
-    CALL_CP_GATHER_INDEXER_K_QUANT_CACHE(32);
+    CALL_CP_GATHER_INDEXER_K_CACHE(32);
   }
 }
 
