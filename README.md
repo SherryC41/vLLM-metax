@@ -1,121 +1,72 @@
-# vLLM-MetaX
+<!-- markdownlint-disable MD001 MD041 -->
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vllm-project/vllm/main/docs/assets/logos/vllm-logo-text-dark.png">
+    <img alt="vLLM" src="https://raw.githubusercontent.com/MetaX-MACA/vLLM-metax/master/docs/assets/logos/vllm-metax-logo.png" width=55%>
+  </picture>
+</p>
 
-The MXMACA backend plugin for vLLM.
+<h3 align="center">
+vLLM MetaX Plugin
+</h3>
 
-## Prepare Building Environments
+<p align="center">
+| <a href="https://www.metax-tech.com/en/"><b>About MetaX</b></a> | <a href="https://vllm-metax.readthedocs.io/en/latest/"><b>Documentation</b></a> | <a href="https://slack.vllm.ai"><b>#sig-maca</b></a> </a> |
+</p>
 
-vllm-metax plugin needs to be built with corresponding **Maca Toolkits**.
+---
 
-### manually
+*Latest News* 🔥
 
-Checking and install all the vLLM environment requirements [here](https://developer.metax-tech.com/softnova/category?package_kind=AI&dimension=metax&chip_name=%E6%9B%A6%E4%BA%91C500%E7%B3%BB%E5%88%97&deliver_type=%E5%88%86%E5%B1%82%E5%8C%85&ai_frame=vllm&ai_label=vLLM):
-
-<img width="1788" height="183" alt="image" src="https://github.com/user-attachments/assets/df1c30bd-e2f9-41a9-a1b2-256291edc618" />
-
-You could also update *Maca Toolkits* separately with specific version by:
-
-- *MetaX Driver*: [*online*](https://developer.metax-tech.com/softnova/download?package_kind=Driver&dimension=metax&chip_name=%E6%9B%A6%E4%BA%91C500%E7%B3%BB%E5%88%97&deliver_type=%E5%88%86%E5%B1%82%E5%8C%85) or [*offline*](https://developer.metax-tech.com/softnova/download?package_kind=Driver&dimension=metax&chip_name=%E6%9B%A6%E4%BA%91C500%E7%B3%BB%E5%88%97&deliver_type=%E5%88%86%E5%B1%82%E5%8C%85)
-
-- *Maca SDK*: [*online*](https://developer.metax-tech.com/softnova/download?package_kind=SDK&dimension=metax&chip_name=%E6%9B%A6%E4%BA%91C500%E7%B3%BB%E5%88%97&deliver_type=%E5%88%86%E5%B1%82%E5%8C%85) or [*offline*](https://developer.metax-tech.com/softnova/download?package_kind=SDK&dimension=metax&chip_name=%E6%9B%A6%E4%BA%91C500%E7%B3%BB%E5%88%97&deliver_type=%E5%88%86%E5%B1%82%E5%8C%85)
-
-### or... docker images
-
-Directly using docker images released on [*MetaX Develop Community*](https://developer.metax-tech.com/softnova/docker).
-All the required components are pre-installed in docker image.
-
-> Note: You may need to search docker images for `vllm` distribution.
-
-***Belows is version mapping to released plugin and maca***:
-
-| plugin version | maca version | docker distribution tag |
-|:--------------:|:------------:|:-----------------------:|
-|v0.8.5          |maca2.33.1.13 | vllm:maca.ai2.33.1.13-torch2.6-py310-ubuntu22.04-amd64 |
-|v0.9.1          |maca3.0.0.5   | vllm:maca.ai3.0.0.5-torch2.6-py310-ubuntu22.04-amd64 |
-|v0.10.1.1 (dev only)|maca3.0.0.5(dev only)| vllm:maca.ai3.0.0.5-torch2.6-py310-ubuntu22.04-amd64 (dev only)|
-|v0.10.2(dev only)|maca3.1.0.x(dev only)| N/A |
-|master|maca3.1.0.x(dev only)| N/A|
+- [2025/11] We hosted [vLLM Beijing Meetup](https://mp.weixin.qq.com/s/xSrYXjNgr1HbCP4ExYNG1w) focusing on distributed inference and diverse accelerator support with vLLM! Please find the meetup slides [here](https://drive.google.com/drive/folders/1nQJ8ZkLSjKxvu36sSHaceVXtttbLvvu-?usp=drive_link).
+- [2025/08] We hosted [vLLM Shanghai Meetup](https://mp.weixin.qq.com/s/pDmAXHcN7Iqc8sUKgJgGtg) focusing on building, developing, and integrating with vLLM! Please find the meetup slides [here](https://drive.google.com/drive/folders/1OvLx39wnCGy_WKq8SiVKf7YcxxYI3WCH).
 
 
-> Note: All the vllm tests are based on the related maca version. Using incorresponding version of maca for vllm may cause unexpected bugs or errors. This is not garanteed.
+## About
 
-## Install plugin
+vLLM MetaX is a hardware plugin for running vLLM seamlessly on MetaX GPU, which is a cuda_alike backend and provided near-native CUDA experiences on MetaX Hardware with [*MACA*](https://www.metax-tech.com/en/goods/platform.html?cid=4).
 
-Currently we only support building in docker.
-> if build in host, you need to manually install all the dependencies and package requirements first.
+It is the recommended approach for supporting the MetaX backend within the vLLM community. 
 
-### install vllm
-**clone repository and install from source**:
-```bash
-# clone vllm
-git clone  --depth 1 --branch main https://github.com/vllm-project/vllm && cd vllm
+The plugin follows the vLLM plugin RFCs by default:
+ - [[RFC]: Hardware pluggable](https://github.com/vllm-project/vllm/issues/11162)
+ - [[RFC]: Enhancing vLLM Plugin Architecture](https://github.com/vllm-project/vllm/issues/19161)
 
-# install build requirements
-python use_existing_torch.py
-pip install -r requirements/build.txt
-VLLM_TARGET_DEVICE=empty pip install -v . --no-build-isolation
-```
+Which ensured the hardware features and functionality support on integration of the MetaX GPU with vLLM.
 
-### install vllm-metax
+## Prerequisites
 
-**setup env variables**:
+- Hardware: MetaX C-series
+- OS: Linux
+- Software:
+  - Python >= 3.9, < 3.12
+  - vLLM (the same version as vllm-metax)
+  - Docker support
 
-```
-# setup MACA path
-export MACA_PATH="/opt/maca"
+## Getting Started
 
-# cu-bridge
-export CUCC_PATH="${MACA_PATH}/tools/cu-bridge"
-export CUDA_PATH=/root/cu-bridge/CUDA_DIR
-export CUCC_CMAKE_ENTRY=2
+vLLM MetaX currently only support starting on docker images release by [MetaX develop community](https://developer.metax-tech.com/softnova/docker) which is out of box. (DockerFile for other OS is undertesting)
 
-# update PATH
-export PATH=${MACA_PATH}/mxgpu_llvm/bin:${MACA_PATH}/bin:${CUCC_PATH}/tools:${CUCC_PATH}/bin:${PATH}
-export LD_LIBRARY_PATH=${MACA_PATH}/lib:${MACA_PATH}/ompi/lib:${MACA_PATH}/mxgpu_llvm/lib:${LD_LIBRARY_PATH}
+If you want to develop, debug or test the newest feature on vllm-metax, you may need to build from scratch and follow this [*source build tutorial*](https://vllm-metax.readthedocs.io/en/latest/getting_started/installation/maca.html). 
 
-export VLLM_INSTALL_PUNICA_KERNELS=1
-```
+## Branch
 
-**clone repository**:
-```bash
-# clone vllm-metax
-git clone  --depth 1 --branch [branch-name] [vllm-metax-repo-url] && cd vllm-metax
-```
-There are two ways to build the plugin:
+vllm-metax has master branch and dev branch.
 
-- if you want to build the binary distribution :
+- **master**: main branch，catching up with main branch of vLLM upstream.
+- **vX.Y.Z-dev**: development branch, created with part of new releases of vLLM. For example, `v0.10.2-dev` is the dev branch for vLLM `v0.10.2` version.
 
-```bash
-# install requirements for building
-pip install -r requirements/build.txt
-# build wheels
-python setup.py bdist_wheel
-# install wheels
-pip install dist/*.whl
-```
+Below is maintained branches:
 
-- Or, you could *build and install* the plugin via `pip`:
+| Branch      | Status       | Note                                 |
+|-------------|--------------|--------------------------------------|
+| master      | Maintained   | trying to support vllm main, no gurantee on functionality |
+| v0.11.0-dev | Maintained   | under testing |
+| v0.10.2-dev | Maintained   | release on Nov.2025 |
 
-```bash
-# install requirements for building
-pip install -r requirements/build.txt
-# since we use our local pytorch, add the --no-build-isolation flag 
-# to avoid the conflict with the official pytorch
-pip install . -v --no-build-isolation
-```
+Please check [here](https://vllm-metax.readthedocs.io/en/latest/getting_started/quickstart.html) for more details .
 
-> ***Note***: plugin would copy the `.so` files to the vllm_dist_path, which is the `vllm` under `pip show vllm | grep Location` by default.
->
-> If you :
->
-> - ***Skipped the building step*** and installed the binary distribution `.whl` from somewhere else(e.g. pypi).
->
-> - Or ***reinstalled*** the official vllm
->
-> You need **manually** executing the following command to initialize the plugin after the plugin installation:
+## License
 
-```bash
-$ vllm_metax_init
-```
-
-
+Apache License 2.0, as found in the [LICENSE](./LICENSE) file.
 
