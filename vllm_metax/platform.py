@@ -18,14 +18,11 @@ from vllm_metax.utils import import_pymxml
 from vllm.utils.torch_utils import cuda_device_count_stateless
 
 from vllm.platforms.interface import DeviceCapability, Platform, PlatformEnum
+from vllm.utils.argparse_utils import FlexibleArgumentParser
 
 if TYPE_CHECKING:
-    from vllm.utils import FlexibleArgumentParser
     from vllm.attention.backends.registry import _Backend
     from vllm.config import VllmConfig
-else:
-    _Backend = None
-    FlexibleArgumentParser = object
 
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
@@ -223,18 +220,22 @@ class MacaPlatformBase(Platform):
             compilation_config.cudagraph_mode = CUDAGraphMode.NONE
 
         # Reduce the cudagraph capture sizes on Maca to avoid OOM issues
-        if (
-            vllm_config.model_config is not None
-            and not vllm_config.model_config.enforce_eager
-            and compilation_config.cudagraph_capture_sizes is not None
-        ):
-            batch_size_capture_list = [
-                size
-                for size in compilation_config.cudagraph_capture_sizes
-                if size < 257
-            ]
-            compilation_config.cudagraph_capture_sizes = None
-            compilation_config.init_with_cudagraph_sizes(batch_size_capture_list)
+        compilation_config.max_cudagraph_capture_size = 256
+        compilation_config.cudagraph_capture_sizes = [
+            size
+            for size in compilation_config.cudagraph_capture_sizes
+            if size <= compilation_config.max_cudagraph_capture_size
+        ]
+        compilation_config.compile_sizes = [
+            size
+            for size in compilation_config.compile_sizes
+            if size <= compilation_config.max_cudagraph_capture_size
+        ]
+        compilation_config.bs_to_padded_graph_size = [
+            size
+            for size in compilation_config.bs_to_padded_graph_size
+            if size <= compilation_config.max_cudagraph_capture_size
+        ]
 
         # Disable cascade attention for Maca platform currently
         if vllm_config.model_config is not None:
@@ -249,7 +250,9 @@ class MacaPlatformBase(Platform):
         return torch.cuda.max_memory_allocated(device)
 
     @classmethod
-    def get_vit_attn_backend(cls, head_size: int, dtype: torch.dtype) -> _Backend:
+    def get_vit_attn_backend(cls, head_size: int, dtype: torch.dtype) -> "_Backend":
+        from vllm.attention.backends.registry import _Backend
+
         # TODO(Hank) Need to check which is better between
         # TORCH_SDPA or FLASH_ATTN on Maca platform
         return _Backend.TORCH_SDPA
@@ -284,6 +287,8 @@ class MacaPlatformBase(Platform):
         has_sink,
         use_sparse,
     ) -> str:
+        from vllm.attention.backends.registry import _Backend
+
         if use_mla:
             if not use_v1:
                 raise RuntimeError(
@@ -483,6 +488,7 @@ class MacaPlatformBase(Platform):
     def pre_register_and_update(
         cls, parser: FlexibleArgumentParser | None = None
     ) -> None:
+        # TODO(m01016): update cudagraph max capture size  here
         logger.info("Pre-registering and updating Maca platform.")
 
 
