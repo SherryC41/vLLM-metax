@@ -315,7 +315,7 @@ class MacaPlatformBase(Platform):
             use_flashmla = selected_backend == _Backend.FLASHMLA or (
                 selected_backend is None and is_flashmla_dense_supported()[0]
             )
-            use_flashattn = selected_backend == _Backend.FLASH_ATTN_MLA or (
+            use_flashattn_mla = selected_backend == _Backend.FLASH_ATTN_MLA or (
                 selected_backend is None and flash_attn_supports_mla()
             )
             use_triton = selected_backend == _Backend.TRITON_MLA or (

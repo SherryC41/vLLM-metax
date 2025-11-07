@@ -594,7 +594,7 @@ if not ext_modules:
 else:
     cmdclass = {
         "build_ext": repackage_wheel if envs.VLLM_USE_PRECOMPILED else cmake_build_ext,
-        "install": custom_install,
+        # "install": custom_install,
     }
 
 setup(
