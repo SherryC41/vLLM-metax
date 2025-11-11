@@ -1,8 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
 
-# TODO: hotfix for subprocess while unpickle, remove after torch2.8 is released
-from vllm_metax.hotfix import patch_utils  # noqa: F401
-
 from typing import Optional
 
 import torch

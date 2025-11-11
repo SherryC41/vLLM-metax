@@ -631,5 +631,3 @@ finally:
 
 MacaPlatform = MxmlPlatform if mxml_available else NonMxmlMetaxPlatform
 MacaPlatform.log_warnings()
-
-import vllm_metax.hotfix.patch_utils  # noqa: F401
