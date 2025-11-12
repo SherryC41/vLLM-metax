@@ -32,7 +32,7 @@ repos:
   rev: 0.9.1
   hooks:
     - id: pip-compile
-      args: [requirements/test.in, -o, requirements/test.txt, --index-strategy, unsafe-best-match, --torch-backend, cu129, --python-platform, x86_64-manylinux_2_28]
+      args: [requirements/test.in, -o, requirements/test.txt, --index-strategy, unsafe-best-match, --torch-backend, cpu]
       files: ^requirements/test\.(in|txt)$
 - repo: local
   hooks:
@@ -62,7 +62,7 @@ repos:
     stages: [manual] # Only run in CI
   - id: shellcheck
     name: Lint shell scripts
-    entry: tools/shellcheck.sh
+    entry: tools/pre_commit/shellcheck.sh
     language: script
     types: [shell]
   - id: png-lint
@@ -101,7 +101,7 @@ repos:
     pass_filenames: false
   - id: enforce-import-regex-instead-of-re
     name: Enforce import regex as re
-    entry: python tools/enforce_regex_import.py
+    entry: python tools/pre_commit/enforce_regex_import.py
     language: python
     types: [python]
     pass_filenames: false

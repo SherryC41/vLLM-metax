@@ -45,7 +45,8 @@ def find_loaded_library(lib_name) -> str | None:
     path = found_line[start:].strip()
     filename = path.split("/")[-1]
     assert filename.rpartition(".so")[0].startswith(lib_name), (
-        f"Unexpected filename: {filename} for library {lib_name}")
+        f"Unexpected filename: {filename} for library {lib_name}"
+    )
     return path
 
 
@@ -92,20 +93,19 @@ def unmap_and_release(allocation_handle: HandleType) -> None:
 
 
 def get_pluggable_allocator(
-    python_malloc_fn: Callable[[int],
-                               int], python_free_func: Callable[[int, int],
-                                                                None]
+    python_malloc_fn: Callable[[int], int], python_free_func: Callable[[int, int], None]
 ) -> torch.cuda.memory.CUDAPluggableAllocator:
     init_module(python_malloc_fn, python_free_func)
     new_alloc = torch.cuda.memory.CUDAPluggableAllocator(
-        lib_name, "my_malloc", "my_free")
+        lib_name, "my_malloc", "my_free"
+    )
     return new_alloc
 
 
 @contextmanager
 def use_memory_pool_with_allocator(
-        python_malloc_fn: Callable[[int], int],
-        python_free_func: Callable[[int, int], None]) -> None:
+    python_malloc_fn: Callable[[int], int], python_free_func: Callable[[int, int], None]
+) -> None:
     new_alloc = get_pluggable_allocator(python_malloc_fn, python_free_func)
     mem_pool = torch.cuda.memory.MemPool(new_alloc._allocator)
     with torch.cuda.memory.use_mem_pool(mem_pool):
@@ -157,7 +157,8 @@ class CuMemAllocator:
         assert "expandable_segments:True" not in conf, (
             "Expandable segments are not compatible with memory pool. "
             "Please track https://github.com/pytorch/pytorch/issues/147851 "
-            "for the latest updates.")
+            "for the latest updates."
+        )
 
         self.pointer_to_data: dict[int, AllocationData] = {}
         self.current_tag: str = CuMemAllocator.default_tag
@@ -174,7 +175,8 @@ class CuMemAllocator:
         when memory is allocated in the memory pool."""
         py_d_mem = allocation_handle[2]
         self.pointer_to_data[py_d_mem] = AllocationData(
-            allocation_handle, self.current_tag)
+            allocation_handle, self.current_tag
+        )
         logger.debug(
             "Allocated %s bytes for %s with address %s from cumem allocator",
             allocation_handle[1],
@@ -210,9 +212,9 @@ class CuMemAllocator:
         if offload_tags is None:
             # by default, allocated tensors are offloaded
             # when the allocator sleeps
-            offload_tags = (CuMemAllocator.default_tag, )
+            offload_tags = (CuMemAllocator.default_tag,)
         elif isinstance(offload_tags, str):
-            offload_tags = (offload_tags, )
+            offload_tags = (offload_tags,)
 
         assert isinstance(offload_tags, tuple)
 
@@ -265,8 +267,9 @@ class CuMemAllocator:
                 if data.cpu_backup_tensor is not None:
                     cpu_backup_tensor = data.cpu_backup_tensor
                     if cpu_backup_tensor is not None:
-                        size_in_bytes = (cpu_backup_tensor.numel() *
-                                         cpu_backup_tensor.element_size())
+                        size_in_bytes = (
+                            cpu_backup_tensor.numel() * cpu_backup_tensor.element_size()
+                        )
                         cpu_ptr = cpu_backup_tensor.data_ptr()
                         libcudart.cudaMemcpy(ptr, cpu_ptr, size_in_bytes)
                         data.cpu_backup_tensor = None
@@ -288,8 +291,9 @@ class CuMemAllocator:
 
         old_tag = self.current_tag
         self.current_tag = tag
-        with use_memory_pool_with_allocator(self.python_malloc_callback,
-                                            self.python_free_callback) as data:
+        with use_memory_pool_with_allocator(
+            self.python_malloc_callback, self.python_free_callback
+        ) as data:
             # start to hit another PyTorch bug in PyTorch 2.6,
             # possibly because of gc-related issue w.r.t. the allocator and
             # the memory pool.

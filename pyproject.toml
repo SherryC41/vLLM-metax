@@ -56,10 +56,18 @@ metax_enhanced_model = "vllm_metax:register_model"
 where = ["."]
 include = ["vllm_metax*"]
 
+[tool.ruff]
+# Note: all these are maintained by vllm
+exclude = [
+"examples",
+"tests",
+"vllm_metax/third_party",
+"vllm_metax/models"
+]
+
 [tool.ruff.lint.per-file-ignores]
-"vllm_metax/third_party/**" = ["ALL"]
 "vllm_metax/platform.py" = ["ALL"]
-"vllm_metax/version.py" = ["F401"]
+"vllm_metax/version.py" = ["ALL"]
 "vllm_metax/_version.py" = ["ALL"]
 "vllm_metax/v1/**" = ["ALL"]
 "vllm_metax/csrc/**" = ["ALL"]

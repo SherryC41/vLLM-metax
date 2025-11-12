@@ -21,12 +21,11 @@ def sleep(self, level: int = 1) -> None:
     if level == 2:
         model = self.model_runner.model
         self._sleep_saved_buffers = {
-            name: buffer.cpu().clone()
-            for name, buffer in model.named_buffers()
+            name: buffer.cpu().clone() for name, buffer in model.named_buffers()
         }
 
     allocator = CuMemAllocator.get_instance()
-    allocator.sleep(offload_tags=("weights", ) if level == 1 else tuple())
+    allocator.sleep(offload_tags=("weights",) if level == 1 else tuple())
     free_bytes_after_sleep, total = torch.cuda.mem_get_info()
     freed_bytes = free_bytes_after_sleep - free_bytes_before_sleep
     used_bytes = total - free_bytes_after_sleep
@@ -60,7 +59,8 @@ def _maybe_get_memory_pool_context(self, tag: str) -> AbstractContextManager:
         allocator = CuMemAllocator.get_instance()
         if tag == "weights":
             assert allocator.get_current_usage() == 0, (
-                "Sleep mode can only be used for one instance per process.")
+                "Sleep mode can only be used for one instance per process."
+            )
         context = allocator.use_memory_pool(tag=tag)
     else:
         context = nullcontext()

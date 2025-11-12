@@ -45,14 +45,14 @@ def post_installation():
 
     # Get the path to the vllm distribution
     vllm_dist_path = Path(
-        str(importlib.metadata.distribution("vllm").locate_file("vllm")))
+        str(importlib.metadata.distribution("vllm").locate_file("vllm"))
+    )
     plugin_dist_path = Path(
-        str(
-            importlib.metadata.distribution("vllm_metax").locate_file(
-                "vllm_metax")))
+        str(importlib.metadata.distribution("vllm_metax").locate_file("vllm_metax"))
+    )
 
-    assert (os.path.exists(vllm_dist_path))
-    assert (os.path.exists(plugin_dist_path))
+    assert os.path.exists(vllm_dist_path)
+    assert os.path.exists(plugin_dist_path)
 
     print(f"vLLM Dist Location: [{vllm_dist_path}]")
     print(f"vLLM_plugin Dist Location: [{plugin_dist_path}]")
@@ -60,8 +60,8 @@ def post_installation():
     files_to_copy = {
         # workaround for Qwen3-Next
         # for get_available_device: set cuda
-        "patch/vllm_substitution/utils.py":
-        vllm_dist_path / "model_executor/layers/fla/ops/utils.py",
+        "patch/vllm_substitution/utils.py": vllm_dist_path
+        / "model_executor/layers/fla/ops/utils.py",
     }
 
     for src_path, dest_path in files_to_copy.items():
@@ -78,6 +78,7 @@ def post_installation():
 
 def collect_env() -> None:
     from vllm_metax.collect_env import main as collect_env_main
+
     collect_env_main()
 
 
@@ -99,17 +100,22 @@ def register_ops():
 
 def register_model():
     from .models import register_model
+
     register_model()
 
 
 def register_quant_configs():
     from vllm_metax.quant_config.awq import MacaAWQConfig  # noqa: F401
     from vllm_metax.quant_config.awq_marlin import (  # noqa: F401
-        MacaAWQMarlinConfig)
+        MacaAWQMarlinConfig,
+    )
     from vllm_metax.quant_config.gptq import MacaGPTQConfig  # noqa: F401
     from vllm_metax.quant_config.gptq_marlin import (  # noqa: F401
-        MacaGPTQMarlinConfig)
+        MacaGPTQMarlinConfig,
+    )
     from vllm_metax.quant_config.moe_wna16 import (  # noqa: F401
-        MacaMoeWNA16Config)
+        MacaMoeWNA16Config,
+    )
     from vllm_metax.quant_config.compressed_tensors import (  # noqa: F401
-        MacaCompressedTensorsConfig)
+        MacaCompressedTensorsConfig,
+    )

@@ -36,12 +36,15 @@ FILES = [
     "vllm_metax/transformers_utils",
     "vllm_metax/triton_utils",
     "vllm_metax/usage",
+    "vllm_metax/v1/core",
+    "vllm_metax/v1/engine",
 ]
 
 # After fixing errors resulting from changing follow_imports
 # from "skip" to "silent", move the following directories to FILES
 SEPARATE_GROUPS = [
     "tests",
+    # v0 related
     "vllm_metax/attention",
     "vllm_metax/compilation",
     "vllm_metax/engine",
@@ -50,7 +53,16 @@ SEPARATE_GROUPS = [
     "vllm_metax/model_executor",
     "vllm_metax/plugins",
     "vllm_metax/worker",
-    "vllm_metax/v1",
+    # v1 related
+    "vllm_metax/v1/attention",
+    "vllm_metax/v1/executor",
+    "vllm_metax/v1/kv_offload",
+    "vllm_metax/v1/metrics",
+    "vllm_metax/v1/pool",
+    "vllm_metax/v1/sample",
+    "vllm_metax/v1/spec_decode",
+    "vllm_metax/v1/structured_output",
+    "vllm_metax/v1/worker",
 ]
 
 # TODO(woosuk): Include the code from Megatron and HuggingFace.
