@@ -17,7 +17,7 @@ import torch.nn.functional as F
 import vllm.envs as envs
 import vllm.model_executor.layers.fused_moe.modular_kernel as mk
 from vllm import _custom_ops as ops
-from vllm.logger import init_logger
+from vllm.logger import logger
 from vllm.model_executor.layers.batch_invariant import (
     vllm_is_batch_invariant,
 )
@@ -63,8 +63,6 @@ from vllm.model_executor.layers.fused_moe.rocm_aiter_fused_moe import (
     is_rocm_aiter_moe_enabled,
 )
 from vllm_metax import _custom_ops as mx_ops
-
-logger = init_logger(__name__)
 
 
 @triton.jit
