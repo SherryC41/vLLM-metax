@@ -255,24 +255,27 @@ class MacaPlatformBase(Platform):
 
         # TODO(Hank) Need to check which is better between
         # TORCH_SDPA or FLASH_ATTN on Maca platform
-        return _Backend.TORCH_SDPA
-
-        if dtype not in (torch.float16, torch.bfloat16):
-            return _Backend.XFORMERS
-
         FLASH_ATTN_V1 = (
             "vllm_metax.v1.attention.backends.flash_attn.MacaFlashAttentionBackend"  # noqa: E501
         )
         from vllm.attention.selector import is_attn_backend_supported
 
-        is_default_fa_supported = is_attn_backend_supported(
+        if is_default_fa_supported := is_attn_backend_supported(
             FLASH_ATTN_V1, head_size, dtype, allow_import_error=False
-        )
-        if is_default_fa_supported:
+        ):
             return _Backend.FLASH_ATTN
         else:
-            # Fallback to XFORMERS
-            return _Backend.XFORMERS
+            use_sdpa_attention_reason = {}
+            if not is_default_fa_supported.head_size:
+                use_sdpa_attention_reason["head_size"] = head_size
+            if not is_default_fa_supported.dtype:
+                use_sdpa_attention_reason["dtype"] = dtype
+            logger.warning(
+                "Fallback to Backend TORCH_SDPA as vit_attn_backend since %s is "
+                "not supported on FLASH_ATTN.",
+                ", ".join(f"{k}={v}" for k, v in use_sdpa_attention_reason.items()),
+            )
+            return _Backend.TORCH_SDPA
 
     @classmethod
     def get_attn_backend_cls(

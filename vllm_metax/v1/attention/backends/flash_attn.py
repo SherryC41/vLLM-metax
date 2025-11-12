@@ -61,7 +61,7 @@ class MacaFlashAttentionBackend(AttentionBackend):
 
     @classmethod
     def get_supported_head_sizes(cls) -> list[int]:
-        return [32, 64, 80, 96, 112, 128, 160, 192, 224, 256]
+        return [32, 64, 72, 80, 96, 112, 128, 160, 192, 224, 256]
 
     @staticmethod
     def get_supported_kernel_block_size() -> list[int | MultipleOf]:
