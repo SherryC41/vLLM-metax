@@ -9,7 +9,7 @@ import os
 
 # torch.compile needs typing.List. It will fail torch.library.infer_schema
 # otherwise
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 import torch
 import torch.nn.functional as F
@@ -1819,8 +1819,8 @@ def fused_experts_impl(
     # We can reuse the memory between these because by the time we need
     # cache3, we're done with cache1
     # ┌------------------------  Metax Modification -------------------------┐
-    stage1_config: dict[str, int] = config.get("stage1", config)
-    stage2_config: dict[str, int] = config.get("stage2", config)
+    stage1_config: dict[str, int] = cast(dict[str, int], config.get("stage1", config))
+    stage2_config: dict[str, int] = cast(dict[str, int], config.get("stage2", config))
 
     if "ACCF32" not in stage1_config:
         stage1_config["ACCF32"] = False
