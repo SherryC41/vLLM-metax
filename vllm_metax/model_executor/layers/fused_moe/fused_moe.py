@@ -17,6 +17,7 @@ import torch.nn.functional as F
 import vllm.envs as envs
 import vllm.model_executor.layers.fused_moe.modular_kernel as mk
 from vllm import _custom_ops as ops
+from vllm._aiter_ops import rocm_aiter_ops
 from vllm.logger import logger
 from vllm.model_executor.layers.batch_invariant import (
     vllm_is_batch_invariant,
@@ -59,9 +60,6 @@ from vllm.triton_utils import tl, triton
 from vllm.utils.deep_gemm import is_deep_gemm_e8m0_used
 from vllm.utils.torch_utils import direct_register_custom_op, is_torch_equal_or_newer
 
-from vllm.model_executor.layers.fused_moe.rocm_aiter_fused_moe import (
-    is_rocm_aiter_moe_enabled,
-)
 from vllm_metax import _custom_ops as mx_ops
 
 
@@ -1141,11 +1139,11 @@ def vllm_topk_softmax(
     return topk_weights, topk_indices
 
 
-def dispatch_topk_func() -> Callable[..., tuple[torch.Tensor, ...]]:
-    if is_rocm_aiter_moe_enabled():
-        from .rocm_aiter_fused_moe import rocm_aiter_topk_softmax
-
-        return rocm_aiter_topk_softmax
+def dispatch_topk_func(
+    use_rocm_aiter: bool = False,
+) -> Callable[..., tuple[torch.Tensor, ...]]:
+    if use_rocm_aiter:
+        return rocm_aiter_ops.topk_softmax
     return vllm_topk_softmax
 
 
@@ -1173,7 +1171,7 @@ def fused_topk(
         M, topk, dtype=torch.int32, device=hidden_states.device
     )
 
-    topk_func = dispatch_topk_func()
+    topk_func = dispatch_topk_func(use_rocm_aiter=rocm_aiter_ops.is_fused_moe_enabled())
     topk_weights, topk_ids = topk_func(
         topk_weights, topk_ids, token_expert_indices, gating_output, renormalize
     )
@@ -1821,8 +1819,8 @@ def fused_experts_impl(
     # We can reuse the memory between these because by the time we need
     # cache3, we're done with cache1
     # ┌------------------------  Metax Modification -------------------------┐
-    stage1_config = config.get("stage1", config)
-    stage2_config = config.get("stage2", config)
+    stage1_config: dict[str, int] = config.get("stage1", config)
+    stage2_config: dict[str, int] = config.get("stage2", config)
 
     if "ACCF32" not in stage1_config:
         stage1_config["ACCF32"] = False
@@ -2245,6 +2243,7 @@ class TritonExperts(mk.FusedMoEPermuteExpertsUnpermute):
             use_int8_w8a8=self.quant_config.use_int8_w8a8,
             use_int8_w8a16=self.quant_config.use_int8_w8a16,
             use_int4_w4a16=self.quant_config.use_int4_w4a16,
+            orig_acc_dtype=hidden_states.dtype,
             per_channel_quant=self.per_act_token_quant,
             block_shape=self.block_shape,
             B_bias=self.w1_bias,
@@ -2283,6 +2282,7 @@ class TritonExperts(mk.FusedMoEPermuteExpertsUnpermute):
             use_int8_w8a8=self.quant_config.use_int8_w8a8,
             use_int8_w8a16=self.quant_config.use_int8_w8a16,
             use_int4_w4a16=self.quant_config.use_int4_w4a16,
+            orig_acc_dtype=hidden_states.dtype,
             per_channel_quant=self.per_act_token_quant,
             block_shape=self.block_shape,
             B_bias=self.w2_bias,
