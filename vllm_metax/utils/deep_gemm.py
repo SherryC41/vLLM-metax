@@ -14,7 +14,7 @@ from typing import Any, Callable, NoReturn
 import torch
 
 import vllm.envs as envs
-from vllm.utils import has_deep_gemm
+from vllm.utils.import_utils import has_deep_gemm
 
 
 def _missing(*_: Any, **__: Any) -> NoReturn:

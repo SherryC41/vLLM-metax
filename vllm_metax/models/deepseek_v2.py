@@ -76,10 +76,10 @@ from vllm.model_executor.model_loader.weight_utils import (
 from vllm.model_executor.models.utils import sequence_parallel_chunk
 from vllm.platforms import current_platform
 from vllm.sequence import IntermediateTensors
-from vllm.utils.deep_gemm import fp8_mqa_logits, fp8_paged_mqa_logits
+from vllm.utils.torch_utils import direct_register_custom_op
 from vllm_metax.utils.deep_gemm import bf16_mqa_logits, bf16_paged_mqa_logits
 from vllm_metax.v1.attention.backends.mla.indexer import (
-    DeepseekV32IndexerBackend,
+    MacaDeepseekV32IndexerBackend as DeepseekV32IndexerBackend,
     DeepseekV32IndexerMetadata,
 )
 from vllm.v1.kv_cache_interface import KVCacheSpec, MLAAttentionSpec
@@ -243,7 +243,7 @@ class DeepseekV2MoE(nn.Module):
             # we do scaling outside, set factor to 1.0 to avoid double mul
             # aiter applies routed_scaling_factor internally
             routed_scaling_factor=1.0
-            not self.is_rocm_aiter_moe_enabled
+            if not self.is_rocm_aiter_moe_enabled
             else self.routed_scaling_factor,
             e_score_correction_bias=self.gate.e_score_correction_bias,
             enable_eplb=self.enable_eplb,

@@ -220,7 +220,7 @@ from vllm.model_executor.layers.linear import (
     UnquantizedLinearMethod,
 )
 from vllm.platforms import current_platform
-from vllm.utils import cdiv, round_down
+from vllm.utils.math_utils import cdiv, round_down
 from vllm.utils.flashinfer import has_nvidia_artifactory
 from vllm.v1.attention.backends.utils import (
     AttentionMetadataBuilder,
@@ -255,7 +255,7 @@ try:
     is_vllm_fa = True
 except ImportError:
     # For rocm use upstream flash attention
-    if current_platform.is_oot():
+    if current_platform.is_out_of_tree():
         from flash_attn import flash_attn_varlen_func
     is_vllm_fa = False
 
