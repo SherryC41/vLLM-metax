@@ -13,7 +13,7 @@ from vllm.model_executor.layers.quantization.moe_wna16 import (
     MoeWNA16Method,
 )
 
-from vllm_metax.patch.model_executor.hook_register import register_quantization_config
+from vllm.model_executor.layers.quantization import register_quantization_config
 
 
 # Remove configs of marlin

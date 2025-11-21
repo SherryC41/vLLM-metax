@@ -18,7 +18,7 @@ from vllm.model_executor.layers.quantization.base_config import QuantizeMethodBa
 from vllm.utils.torch_utils import direct_register_custom_op
 
 from vllm_metax import _custom_ops as ops
-from vllm_metax.patch.model_executor.hook_register import register_quantization_config
+from vllm.model_executor.layers.quantization import register_quantization_config
 
 
 @register_quantization_config("awq")
