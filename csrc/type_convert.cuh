@@ -21,6 +21,70 @@ struct _typeConvert {
   static constexpr bool exists = false;
 };
 
+template <>
+struct _typeConvert<float> {
+  static constexpr bool exists = true;
+  using hip_type = float;
+  using packed_hip_type = float2;
+  using packed_hip_type4 = float4;  // For 128-bit vectorization
+
+  __device__ static __forceinline__ float convert(hip_type x) { return x; }
+  __device__ static __forceinline__ float2 convert(packed_hip_type x) {
+    return x;
+  }
+  __device__ static __forceinline__ float4 convert(packed_hip_type4 x) {
+    return x;
+  }
+};
+
+#if defined(USE_MACA)
+// CUDA < 12.0 runs into issues with packed type conversion
+template <>
+struct _typeConvert<c10::Half> {
+  static constexpr bool exists = true;
+  using hip_type = __half;
+  using packed_hip_type = __half2;
+
+  __device__ static __forceinline__ float convert(hip_type x) {
+    return __half2float(x);
+  }
+  __device__ static __forceinline__ float2 convert(packed_hip_type x) {
+    return __half22float2(x);
+  }
+  __device__ static __forceinline__ hip_type convert(float x) {
+    return __float2half_rn(x);
+  }
+  __device__ static __forceinline__ packed_hip_type convert(float2 x) {
+    return __float22half2_rn(x);
+  }
+};
+
+  #if defined(USE_MACA)
+// CUDA_ARCH < 800 does not have BF16 support
+// TODO: Add in ROCm support once public headers handle bf16 maturely
+template <>
+struct _typeConvert<c10::BFloat16> {
+  static constexpr bool exists = true;
+  using hip_type = __nv_bfloat16;
+  using packed_hip_type = __nv_bfloat162;
+
+  __device__ static __forceinline__ float convert(hip_type x) {
+    return __bfloat162float(x);
+  }
+  __device__ static __forceinline__ float2 convert(packed_hip_type x) {
+    return __bfloat1622float2(x);
+  }
+  __device__ static __forceinline__ hip_type convert(float x) {
+    return __float2bfloat16(x);
+  }
+  __device__ static __forceinline__ packed_hip_type convert(float2 x) {
+    return __float22bfloat162_rn(x);
+  }
+};
+  #endif  // defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+#endif    // defined(USE_ROCM) || (defined(CUDA_VERSION) && (CUDA_VERSION >=
+          // 12000))
+
 /* Vector POD struct to generate vectorized and packed FP16/BF16 ops
    for appropriate specializations of fused_add_rms_norm_kernel.
    Only functions that are necessary in that kernel are implemented.
@@ -41,10 +105,15 @@ struct alignas(16) _f16Vec {
     if constexpr (width % 2 == 0) {
 #pragma unroll
       for (int i = 0; i < width; i += 2) {
-        T2 temp{data[i], data[i + 1]};
-        temp += T2{other.data[i], other.data[i + 1]};
-        data[i] = temp.x;
-        data[i + 1] = temp.y;
+        if constexpr (std::is_same_v<T2, float2>) {
+          data[i] += other.data[i];
+          data[i + 1] += other.data[i + 1];
+        } else {
+          T2 temp{data[i], data[i + 1]};
+          temp += T2{other.data[i], other.data[i + 1]};
+          data[i] = temp.x;
+          data[i + 1] = temp.y;
+        }
       }
     } else {
 #pragma unroll
@@ -57,10 +126,15 @@ struct alignas(16) _f16Vec {
     if constexpr (width % 2 == 0) {
 #pragma unroll
       for (int i = 0; i < width; i += 2) {
-        T2 temp{data[i], data[i + 1]};
-        temp *= T2{other.data[i], other.data[i + 1]};
-        data[i] = temp.x;
-        data[i + 1] = temp.y;
+        if constexpr (std::is_same_v<T2, float2>) {
+          data[i] *= other.data[i];
+          data[i + 1] *= other.data[i + 1];
+        } else {
+          T2 temp{data[i], data[i + 1]};
+          temp *= T2{other.data[i], other.data[i + 1]};
+          data[i] = temp.x;
+          data[i + 1] = temp.y;
+        }
       }
     } else {
 #pragma unroll
