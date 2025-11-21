@@ -27,7 +27,7 @@
 import typing
 from collections.abc import Callable, Iterable
 from itertools import islice
-from typing import Any, Optional, Union
+from typing import Any
 
 import torch
 from torch import nn
@@ -77,19 +77,15 @@ from vllm.model_executor.model_loader.weight_utils import (
 from vllm.model_executor.models.utils import sequence_parallel_chunk
 from vllm.platforms import current_platform
 from vllm.sequence import IntermediateTensors
-from vllm.utils.torch_utils import direct_register_custom_op
 from vllm_metax.utils.deep_gemm import bf16_mqa_logits, bf16_paged_mqa_logits
+from vllm.utils.torch_utils import direct_register_custom_op
 from vllm_metax.v1.attention.backends.mla.indexer import (
     MacaDeepseekV32IndexerBackend as DeepseekV32IndexerBackend,
     DeepseekV32IndexerMetadata,
 )
 from vllm.v1.kv_cache_interface import KVCacheSpec, MLAAttentionSpec
 
-from vllm.model_executor.models.interfaces import (
-    MixtureOfExperts,
-    SupportsLoRA,
-    SupportsPP,
-)
+from vllm.model_executor.models.interfaces import MixtureOfExperts, SupportsEagle, SupportsLoRA, SupportsPP
 from vllm.model_executor.models.utils import (
     PPMissingLayer,
     is_pp_missing_parameter,
@@ -804,11 +800,7 @@ class Indexer(nn.Module):
         )
         self.k_norm = LayerNorm(self.head_dim, eps=1e-6)
         self.weights_proj = ReplicatedLinear(
-            hidden_size,
-            self.n_head,
-            bias=False,
-            quant_config=None,
-            prefix=f"{prefix}.weights_proj",
+            hidden_size, self.n_head, quant_config=None, prefix=f"{prefix}.weights_proj"
         )
         self.softmax_scale = self.head_dim**-0.5
 
@@ -828,9 +820,7 @@ class Indexer(nn.Module):
         )
         self.max_model_len = vllm_config.model_config.max_model_len
         self.prefix = prefix
-        from vllm_metax.v1.attention.backends.mla.indexer import (
-            get_max_prefill_buffer_size,
-        )
+        from vllm.v1.attention.backends.mla.indexer import get_max_prefill_buffer_size
 
         self.max_total_seq_len = get_max_prefill_buffer_size(vllm_config)
 
@@ -866,7 +856,9 @@ class Indexer(nn.Module):
 
         q = q.view(-1, self.n_head, self.head_dim)
         weights, _ = self.weights_proj(hidden_states)
-        weights = weights.unsqueeze(-1) * self.softmax_scale * self.n_head**-0.5
+        weights = (
+            weights.unsqueeze(-1) * q_scale * self.softmax_scale * self.n_head**-0.5
+        )
         weights = weights.squeeze(-1)
 
         assert q.dtype == torch.bfloat16
@@ -1241,7 +1233,7 @@ class DeepseekV2Model(nn.Module):
             ["hidden_states", "residual"], config.hidden_size
         )
 
-    def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
+    def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids)
 
     def forward(
@@ -1255,7 +1247,7 @@ class DeepseekV2Model(nn.Module):
             if inputs_embeds is not None:
                 hidden_states = inputs_embeds
             else:
-                hidden_states = self.get_input_embeddings(input_ids)
+                hidden_states = self.embed_input_ids(input_ids)
             residual = None
         else:
             assert intermediate_tensors is not None
@@ -1316,7 +1308,7 @@ class DeepseekV2MixtureOfExperts(MixtureOfExperts):
 
 
 class DeepseekV2ForCausalLM(
-    nn.Module, SupportsPP, DeepseekV2MixtureOfExperts, SupportsLoRA
+    nn.Module, SupportsPP, DeepseekV2MixtureOfExperts, SupportsLoRA, SupportsEagle
 ):
     packed_modules_mapping = {
         "gate_up_proj": ["gate_proj", "up_proj"],
@@ -1394,8 +1386,8 @@ class DeepseekV2ForCausalLM(
 
         self.extract_moe_parameters(example_moe)
 
-    def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
-        return self.model.get_input_embeddings(input_ids)
+    def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
+        return self.model.embed_input_ids(input_ids)
 
     def forward(
         self,
