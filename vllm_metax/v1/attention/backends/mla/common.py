@@ -204,7 +204,11 @@ from vllm.attention.backends.abstract import (
 )
 from vllm.attention.backends.utils import get_mla_dims
 from vllm.attention.ops.common import cp_lse_ag_out_rs
-from vllm.attention.ops.merge_attn_states import merge_attn_states
+
+# --------------------------------------------------------------
+# Note: use Maca's merge_attn_states to get cuda kernel invoked
+# --------------------------------------------------------------
+from vllm_metax.attention.ops.merge_attn_states import merge_attn_states
 from vllm_metax.attention.utils.fa_utils import get_flash_attn_version
 from vllm.config import VllmConfig, get_current_vllm_config
 from vllm.distributed.parallel_state import get_dcp_group, is_global_first_rank
@@ -1463,6 +1467,7 @@ class MLACommonImpl(MLACommonBaseImpl[M], Generic[M]):
         W_UK, W_UV = kv_b_proj_weight.split(
             [self.qk_nope_head_dim, self.v_head_dim], dim=-1
         )
+
         if current_platform.is_out_of_tree():
             # Convert from (L, N, V) to (N, L, V)
             self.W_UV = W_UV.transpose(0, 1)

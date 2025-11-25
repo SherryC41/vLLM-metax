@@ -18,7 +18,11 @@ from vllm.attention.backends.abstract import (
 )
 from vllm.attention.layer import Attention
 from vllm.attention.ops.common import cp_lse_ag_out_rs
-from vllm.attention.ops.merge_attn_states import merge_attn_states
+
+# --------------------------------------------------------------
+# Note: use Maca's merge_attn_states to get cuda kernel invoked
+# --------------------------------------------------------------
+from vllm_metax.attention.ops.merge_attn_states import merge_attn_states
 from vllm_metax.attention.utils.fa_utils import (
     flash_attn_supports_fp8,
     get_flash_attn_version,
