@@ -4,7 +4,7 @@ from typing import Optional, TYPE_CHECKING
 
 from vllm.model_executor.layers.quantization.awq_marlin import AWQMarlinConfig
 
-from vllm_metax.patch.model_executor.hook_register import register_quantization_config
+from vllm.model_executor.layers.quantization import register_quantization_config
 
 if TYPE_CHECKING:
     from vllm.model_executor.layers.quantization import QuantizationMethods

@@ -4,7 +4,7 @@
 
 import ast
 from dataclasses import dataclass
-from typing import Optional
+from typing import ClassVar, Optional
 
 import torch
 
@@ -12,7 +12,6 @@ from vllm import _custom_ops as ops
 from vllm.attention.backends.abstract import (
     AttentionBackend,
     AttentionImpl,
-    AttentionMetadata,
     AttentionType,
     MultipleOf,
 )
@@ -25,36 +24,20 @@ from vllm.v1.attention.backends.utils import (
     split_decodes_and_prefills,
 )
 from vllm.v1.kv_cache_interface import AttentionSpec
+from vllm.attention.backends.registry import AttentionBackendEnum, register_backend
 
 logger = init_logger(__name__)
 
 
+@register_backend(AttentionBackendEnum.TREE_ATTN)
 class MacaTreeAttentionBackend(AttentionBackend):
     accept_output_buffer: bool = True
-
-    @classmethod
-    def get_supported_dtypes(cls) -> list[torch.dtype]:
-        return [torch.float16, torch.bfloat16]
+    supported_dtypes: ClassVar[list[torch.dtype]] = [torch.float16, torch.bfloat16]
+    supported_kernel_block_sizes: ClassVar[list[int | MultipleOf]] = [MultipleOf(16)]
 
     @classmethod
     def get_supported_head_sizes(cls) -> list[int]:
         return [32, 64, 96, 128, 160, 192, 224, 256]
-
-    @staticmethod
-    def get_supported_kernel_block_size() -> list[int | MultipleOf]:
-        return [MultipleOf(16)]
-
-    @classmethod
-    def validate_head_size(cls, head_size: int) -> None:
-        supported_head_sizes = cls.get_supported_head_sizes()
-        if head_size not in supported_head_sizes:
-            attn_type = cls.__name__.removesuffix("Backend")
-            raise ValueError(
-                f"Head size {head_size} is not supported by {attn_type}. "
-                f"Supported head sizes are: {supported_head_sizes}. "
-                "Set VLLM_ATTENTION_BACKEND=FLEX_ATTENTION to use "
-                "FlexAttention backend which supports all head sizes."
-            )
 
     @staticmethod
     def get_name() -> str:
@@ -63,10 +46,6 @@ class MacaTreeAttentionBackend(AttentionBackend):
     @staticmethod
     def get_impl_cls() -> type["TreeAttentionImpl"]:
         return TreeAttentionImpl
-
-    @staticmethod
-    def get_metadata_cls() -> type["AttentionMetadata"]:
-        return TreeAttentionMetadata
 
     @staticmethod
     def get_kv_cache_shape(
@@ -335,8 +314,6 @@ class TreeAttentionImpl(AttentionImpl):
             self.sliding_window = (-1, -1)
         else:
             self.sliding_window = (sliding_window - 1, 0)
-
-        MacaTreeAttentionBackend.validate_head_size(head_size)
 
         if attn_type != AttentionType.DECODER:
             raise NotImplementedError(

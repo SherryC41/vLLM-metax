@@ -51,7 +51,6 @@ class MacaCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsW8A8Int8MoEMethod)
         logical_to_physical_map: Optional[torch.Tensor] = None,
         logical_replica_count: Optional[torch.Tensor] = None,
     ) -> Union[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
-
         if enable_eplb:
             raise NotImplementedError(
                 "EPLB not supported for `CompressedTensorsW8A8Int8MoEMethod` yet."
@@ -113,7 +112,6 @@ class MacaCompressedTensorsWNA16MoEMethod(CompressedTensorsWNA16MoEMethod):
         logical_to_physical_map: Optional[torch.Tensor] = None,
         logical_replica_count: Optional[torch.Tensor] = None,
     ) -> Union[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
-
         if enable_eplb:
             raise NotImplementedError(
                 "EPLB not supported for `CompressedTensorsWNA16MoEMethod` yet."

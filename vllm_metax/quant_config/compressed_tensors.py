@@ -18,7 +18,7 @@ from vllm_metax.quant_config.compressed_tensors_moe import (
     MacaCompressedTensorsMoEMethod,
 )
 
-from vllm_metax.patch.model_executor.hook_register import register_quantization_config
+from vllm.model_executor.layers.quantization import register_quantization_config
 
 
 @register_quantization_config("compressed-tensors")

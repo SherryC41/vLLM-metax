@@ -19,7 +19,15 @@ def get_flash_attn_version(requires_alibi: bool = False) -> int | None:
     logger.info_once(
         "Using Maca version of flash attention, which only supports version 2."
     )
+
+    # Note: In maca this need to be None since
+    # metax flash_attn api does not have parameter
+    # for `fa_version`.
     return None
+
+
+def flash_attn_supports_sinks() -> bool:
+    return False
 
 
 def flash_attn_supports_fp8() -> bool:

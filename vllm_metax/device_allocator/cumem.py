@@ -52,6 +52,7 @@ def find_loaded_library(lib_name) -> str | None:
 
 cumem_available = False
 # /------------------------  Metax Modifications -------------------------\
+# Using maca `cumem_allocator` and `CudaRTLibrary`
 try:
     from vllm_metax.cumem_allocator import (
         init_module,

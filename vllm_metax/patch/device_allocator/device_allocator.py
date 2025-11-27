@@ -1,4 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
+
+# ------------------------------------------------------------
+# Note: this patch is to support sleep_mode on maca backend.
+#       We need to replace cuda `CuMemAllocator` with maca's.
+# ------------------------------------------------------------
+
+
 import vllm
 from vllm.logger import init_logger
 
