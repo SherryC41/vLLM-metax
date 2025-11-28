@@ -244,7 +244,7 @@ def _get_sliding_window_configs(
 class FlashAttentionMetadataBuilder(AttentionMetadataBuilder[FlashAttentionMetadata]):
     # /------------------------  Metax Modification -------------------------\
     _cudagraph_support = AttentionCGSupport.UNIFORM_BATCH
-    
+
     # Defines the level of query length support for this backend.
     # - SINGLE_ONLY: Only single-token queries (no spec decode support)
     # - UNIFORM: Supports uniform multi-token queries (spec decode with uniform lengths)
