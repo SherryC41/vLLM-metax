@@ -53,11 +53,15 @@ from vllm.v1.attention.backends.utils import (
     get_dcp_local_seq_lens,
     get_kv_cache_layout,
     split_decodes_and_prefills,  # used for prefill decode split
-    reshape_attn_output_for_spec_decode,
-    reshape_query_for_spec_decode,
+    reshape_attn_output_for_spec_decode,  # used for prefill decode split with mtp
+    reshape_query_for_spec_decode,  # used for prefill decode split with mtp
 )
 from vllm.attention.backends.registry import AttentionBackendEnum, register_backend
 from vllm.v1.kv_cache_interface import AttentionSpec
+
+# --------------------------------------------------------------
+# Note: used for prefill decode split with mtp
+# --------------------------------------------------------------
 from vllm_metax.v1.attention.backends.mla.common import QueryLenSupport
 
 logger = init_logger(__name__)
@@ -238,25 +242,9 @@ def _get_sliding_window_configs(
 
 
 class FlashAttentionMetadataBuilder(AttentionMetadataBuilder[FlashAttentionMetadata]):
-    # FA3:
-    # Supports full cudagraphs for all cases.
-    #
-    # FA2:
-    # For FA2, a graph is captured with max_query_len=1, (which is what we
-    # capture by default for num_tokens <= max_num_seqs when there is no
-    # spec-decode) then these graphs will not work for mixed prefill-decode
-    # (unlike FA3). This is due to special max_query_len=1 packed-GQA handling
-    # in FA2.
-    # In summary if we are running with spec decodes the graphs would
-    # work for mixed prefill-decode and uniform-decode. But for non-spec decodes
-    # the graphs would not work for mixed prefill-decode; sorta the inverse
-    # of UNIFORM_SINGLE_TOKEN_DECODE.
-    # There's probably a better way to describe this using `AttentionCGSupport`
-    # but for now just set it to `UNIFORM_BATCH` to get use to drop down
-    # to FULL_AND_PIECEWISE.
-    # TODO(luka, lucas): audit FA2 as part of:
-    #  https://github.com/vllm-project/vllm/issues/22945
+    # /------------------------  Metax Modification -------------------------\
     _cudagraph_support = AttentionCGSupport.UNIFORM_BATCH
+    
     # Defines the level of query length support for this backend.
     # - SINGLE_ONLY: Only single-token queries (no spec decode support)
     # - UNIFORM: Supports uniform multi-token queries (spec decode with uniform lengths)
@@ -271,6 +259,7 @@ class FlashAttentionMetadataBuilder(AttentionMetadataBuilder[FlashAttentionMetad
     # Use `query_len_support` (above) to set this automatically
     # when speculative decoding is enabled.
     reorder_batch_threshold: int = 128  # process small prefills with decode pathway
+    # \------------------------- Metax Modification -------------------------/
 
     def __init__(
         self,
@@ -296,6 +285,7 @@ class FlashAttentionMetadataBuilder(AttentionMetadataBuilder[FlashAttentionMetad
         self.max_num_splits = 0  # No upper bound on the number of splits.
         self.aot_schedule = get_flash_attn_version() == 3
 
+        # /------------------------  Metax Modification -------------------------\
         supports_spec_decode = self.query_len_support != QueryLenSupport.SINGLE_ONLY
         self._init_reorder_batch_threshold(
             self.reorder_batch_threshold, supports_spec_decode
@@ -307,6 +297,7 @@ class FlashAttentionMetadataBuilder(AttentionMetadataBuilder[FlashAttentionMetad
                 f"reorder_batch_threshold must be 1 when query_len_support is "
                 f"SINGLE_ONLY, got {self.reorder_batch_threshold}"
             )
+        # \------------------------- Metax Modification -------------------------/
 
         try:
             from vllm.distributed.parallel_state import get_dcp_group
@@ -363,6 +354,7 @@ class FlashAttentionMetadataBuilder(AttentionMetadataBuilder[FlashAttentionMetad
         slot_mapping = common_attn_metadata.slot_mapping
         causal = common_attn_metadata.causal
 
+        # /------------------------  Metax Modification -------------------------\
         num_decodes, num_prefills, num_decode_tokens, num_prefill_tokens = (
             split_decodes_and_prefills(
                 common_attn_metadata,
@@ -371,7 +363,6 @@ class FlashAttentionMetadataBuilder(AttentionMetadataBuilder[FlashAttentionMetad
             )
         )
 
-        # /------------------------  Metax Modification -------------------------\
         assert num_decode_tokens + num_prefill_tokens == num_actual_tokens
         assert num_decodes + num_prefills == num_reqs
         # \------------------------- Metax Modification -------------------------/
