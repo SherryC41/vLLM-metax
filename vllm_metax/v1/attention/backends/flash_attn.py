@@ -53,9 +53,12 @@ from vllm.v1.attention.backends.utils import (
     get_dcp_local_seq_lens,
     get_kv_cache_layout,
     split_decodes_and_prefills,  # used for prefill decode split
+    reshape_attn_output_for_spec_decode,
+    reshape_query_for_spec_decode,
 )
 from vllm.attention.backends.registry import AttentionBackendEnum, register_backend
 from vllm.v1.kv_cache_interface import AttentionSpec
+from vllm_metax.v1.attention.backends.mla.common import QueryLenSupport
 
 logger = init_logger(__name__)
 
@@ -253,11 +256,21 @@ class FlashAttentionMetadataBuilder(AttentionMetadataBuilder[FlashAttentionMetad
     # to FULL_AND_PIECEWISE.
     # TODO(luka, lucas): audit FA2 as part of:
     #  https://github.com/vllm-project/vllm/issues/22945
-    _cudagraph_support = (
-        AttentionCGSupport.ALWAYS
-        if get_flash_attn_version() == 3
-        else AttentionCGSupport.UNIFORM_BATCH
-    )
+    _cudagraph_support = AttentionCGSupport.UNIFORM_BATCH
+    # Defines the level of query length support for this backend.
+    # - SINGLE_ONLY: Only single-token queries (no spec decode support)
+    # - UNIFORM: Supports uniform multi-token queries (spec decode with uniform lengths)
+    # - VARLEN: Supports variable-length queries (spec decode with mixed lengths)
+    # If set to UNIFORM or VARLEN, this will increase `reorder_batch_threshold` when
+    # speculative decoding is enabled.
+    query_len_support: ClassVar[QueryLenSupport] = QueryLenSupport.UNIFORM
+
+    # The threshold for reordering the batch into decode and prefill requests.
+    # If > 1, the batch will be reordered such that requests with
+    # query length <= threshold are classified as decode requests.
+    # Use `query_len_support` (above) to set this automatically
+    # when speculative decoding is enabled.
+    reorder_batch_threshold: int = 128  # process small prefills with decode pathway
 
     def __init__(
         self,
@@ -282,6 +295,18 @@ class FlashAttentionMetadataBuilder(AttentionMetadataBuilder[FlashAttentionMetad
 
         self.max_num_splits = 0  # No upper bound on the number of splits.
         self.aot_schedule = get_flash_attn_version() == 3
+
+        supports_spec_decode = self.query_len_support != QueryLenSupport.SINGLE_ONLY
+        self._init_reorder_batch_threshold(
+            self.reorder_batch_threshold, supports_spec_decode
+        )
+
+        # Validate consistency between query_len_support and reorder_batch_threshold
+        if self.query_len_support == QueryLenSupport.SINGLE_ONLY:
+            assert self.reorder_batch_threshold == 1, (
+                f"reorder_batch_threshold must be 1 when query_len_support is "
+                f"SINGLE_ONLY, got {self.reorder_batch_threshold}"
+            )
 
         try:
             from vllm.distributed.parallel_state import get_dcp_group
@@ -339,7 +364,11 @@ class FlashAttentionMetadataBuilder(AttentionMetadataBuilder[FlashAttentionMetad
         causal = common_attn_metadata.causal
 
         num_decodes, num_prefills, num_decode_tokens, num_prefill_tokens = (
-            split_decodes_and_prefills(common_attn_metadata)
+            split_decodes_and_prefills(
+                common_attn_metadata,
+                decode_threshold=self.reorder_batch_threshold,
+                require_uniform=(self.query_len_support != QueryLenSupport.VARLEN),
+            )
         )
 
         # /------------------------  Metax Modification -------------------------\
@@ -778,8 +807,11 @@ class FlashAttentionImpl(AttentionImpl):
                 if attn_metadata.num_decodes > 0:
                     # Use flash_attn_with_kvcache for normal decoding.
                     decode_query = query[:num_decode_tokens]
-                    output[:num_decode_tokens] = flash_attn_with_kvcache(
-                        q=decode_query.unsqueeze(1),
+                    decode_query = reshape_query_for_spec_decode(
+                        decode_query, attn_metadata.num_decodes
+                    )
+                    output_unreshape = flash_attn_with_kvcache(
+                        q=decode_query,
                         k_cache=key_cache,
                         v_cache=value_cache,
                         block_table=attn_metadata.decode_block_table,
@@ -789,7 +821,10 @@ class FlashAttentionImpl(AttentionImpl):
                         window_size=self.sliding_window,
                         alibi_slopes=self.alibi_slopes,
                         softcap=self.logits_soft_cap,
-                    ).squeeze(1)
+                    )
+                    output[:num_decode_tokens] = reshape_attn_output_for_spec_decode(
+                        output_unreshape
+                    )
                 return output
             # └------------------------- Metax Modification -------------------------┘
 
