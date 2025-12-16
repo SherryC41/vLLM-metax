@@ -15,11 +15,11 @@ from contextlib import AbstractContextManager, nullcontext
 from vllm.utils.mem_constants import GiB_bytes
 
 import torch
+
 # from vllm.v1.worker import worker_base
 from vllm.v1.worker.gpu_worker import Worker
 from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.distributed.kv_transfer import ensure_kv_transfer_initialized
-
 
 
 def sleep(self, level: int = 1) -> None:
@@ -101,7 +101,7 @@ def initialize_from_config(self, kv_cache_config: KVCacheConfig) -> None:
 
         allocator = CuMemAllocator.get_instance()
         with allocator.use_memory_pool(tag="kv_cache"):
-                self.model_runner.initialize_kv_cache(kv_cache_config)
+            self.model_runner.initialize_kv_cache(kv_cache_config)
     else:
         self.model_runner.initialize_kv_cache(kv_cache_config)
 
