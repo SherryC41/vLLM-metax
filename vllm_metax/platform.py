@@ -79,7 +79,7 @@ def register_attention_backends() -> None:
 
     register_backend(
         AttentionBackendEnum.FLASHMLA,
-        "vllm_metax.v1.attention.backends.mla.flashmla.MacaFlashMLABackend",
+        class_path="vllm_metax.v1.attention.backends.mla.flashmla.MacaFlashMLABackend",
     )
     register_backend(
         backend=AttentionBackendEnum.FLASHMLA_SPARSE,
@@ -91,7 +91,7 @@ def register_attention_backends() -> None:
     )
     register_backend(
         AttentionBackendEnum.FLASH_ATTN,
-        "vllm_metax.v1.attention.backends.flash_attn.MacaFlashAttentionBackend",
+        class_path="vllm_metax.v1.attention.backends.flash_attn.MacaFlashAttentionBackend",
     )
     register_backend(
         backend=AttentionBackendEnum.FLASHINFER,
