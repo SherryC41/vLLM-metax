@@ -1,5 +1,6 @@
 - name: "example-model"
   model_path: "/path/to/example-model"
+  timeout: 600 # default is 600 seconds
   serve_config:
     tp: 99
     pp: 99

@@ -12,6 +12,20 @@
     sweep_num_runs: 1
   extra_env:
 
+- name: "DeepSeek-OCR"
+  model_path: "/mxstorage/pde_ai/models/llm/DeepSeek/DeepSeek-OCR"
+  serve_config:
+    tp: 1
+    dp: 1
+    pp: 1
+    extra_args:
+  infer_type:
+    - text-only
+  benchmark:
+    bench_param: "configs/bench_params/bench_default.json"
+    sweep_num_runs: 1
+  extra_env:
+
 
 - name: "DeepSeek-R1-Distill-Qwen-7B"
   model_path: "/mxstorage/pde_ai/models/llm/DeepSeek/DeepSeek-R1-Distill-Qwen-7B"
@@ -318,10 +332,10 @@
     sweep_num_runs: 1
   extra_env:
 
-- name: "Qwen3-32B-AWQ"
-  model_path: "/mxstorage/pde_ai/models/llm/Qwen/Qwen3-32B"
+- name: "Qwen3-30B-A3B-AWQ"
+  model_path: "/mxstorage/pde_ai/models/llm/Qwen/Qwen3-30B-A3B-AWQ"
   serve_config:
-    tp: 1
+    tp: 2
     dp: 1
     pp: 1
     extra_args:
@@ -515,6 +529,21 @@
     sweep_num_runs: 1
   extra_env:
 
+- name: "glm-4.6V"
+  model_path: "/mxstorage/pde_ai/models/llm/ChatGLM/GLM-4.6V"
+  serve_config:
+    tp: 1
+    dp: 1
+    pp: 1
+    is_multimodal: true
+    extra_args:
+  infer_type:
+    - text-only
+  benchmark:
+    bench_param: "configs/bench_params/bench_default.json"
+    sweep_num_runs: 1
+  extra_env:
+
 - name: "Qwen2-72B-Instruct-w8a8"
   model_path: "/mxstorage/pde_ai/models/llm/W8A8/Qwen2-72B-Instruct-quantized___w8a8"
   serve_config:
@@ -658,6 +687,34 @@
 
 - name: "Kimi-Linear-48B-A3B-Instruct"
   model_path: "/mxstorage/pde_ai/models/llm/Kimi-Linear-48B-A3B-Instruct"
+  serve_config:
+    tp: 2
+    dp: 1
+    pp: 1
+    extra_args:
+  infer_type:
+    - text-only
+  benchmark:
+    bench_param: "configs/bench_params/bench_default.json"
+    sweep_num_runs: 1
+  extra_env:
+
+- name: "GLM-4.6-W8A8"
+  model_path: "/mxstorage/pde_ai/models/llm/ChatGLM/GLM-4.6-W8A8"
+  serve_config:
+    tp: 2
+    dp: 1
+    pp: 1
+    extra_args:
+  infer_type:
+    - text-only
+  benchmark:
+    bench_param: "configs/bench_params/bench_default.json"
+    sweep_num_runs: 1
+  extra_env:
+
+- name: "GLM-4.5V_W8A8"
+  model_path: "/mxstorage/pde_ai/models/llm/ChatGLM/GLM-4.5V_W8A8/vllm_quant_model"
   serve_config:
     tp: 2
     dp: 1
@@ -932,6 +989,7 @@
   extra_env:
 
 - name: "Qwen3-235B-A22B-w8a8"
+  timeout: 1200
   model_path: "/mxstorage/pde_ai/models/llm/Qwen/Qwen3-235B-A22B.w8a8"
   serve_config:
     tp: 8
@@ -989,6 +1047,7 @@
 
 - name: "Qwen3-VL-235B-A22B-Instruct_W8A8"
   model_path: "/mxstorage/pde_ai/models/llm/Qwen/Qwen3-VL-235B-A22B-Instruct_W8A8/vllm_quant_model"
+  timeout: 1200
   serve_config:
     tp: 8
     dp: 1

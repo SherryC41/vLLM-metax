@@ -30,7 +30,7 @@ class Worker(abc.ABC):
     def run(self, stop_event: threading.Event):
         raise NotImplementedError("Worker must implement run method.")
 
-    def _wait_and_allocate_gpus(self, timeout: int = 3600) -> list[int]:
+    def _wait_and_allocate_gpus(self, timeout: int = 7200) -> list[int]:
         # Block until required GPUs are allocated
         assert self.related_gpu_ids == [], "GPUs have already been allocated."
 
@@ -52,6 +52,10 @@ class Worker(abc.ABC):
                 self.related_gpu_ids = occupied_gpus
                 return occupied_gpus
             time.sleep(10)
+
+        raise TimeoutError(
+            f"[{self.model_cfg['name']}] Failed to allocate {required_gpus} GPUs within {timeout} seconds."
+        )
 
     def _cleanup(self):
         self.port_manager.release_port(self.port)
@@ -92,7 +96,7 @@ class ModelConfigManager:
             str(serve_config.get("dp", 1)),
             "--trust-remote-code",
             "--gpu-memory-utilization",
-            str(serve_config.get("gpu_memory_utilization", 0.9)),
+            str(serve_config.get("gpu_memory_utilization", 0.8)),
             "--swap-space",
             str(serve_config.get("swap_space", 16)),
             "--max-model-len",
@@ -210,7 +214,7 @@ class InferWorker(Worker):
         self.api_serve_process = None
         self.status = self.InferenceStatus.INIT
         self.serve_cfg = model_cfg.get("serve_config", {})
-        self.model_tag = f"{model_cfg['name']}_tp{self.serve_cfg.get('tp', 1)}_pp{self.serve_cfg.get('pp', 1)}_dp{self.serve_cfg.get('dp', 1)}"
+        self.model_tag = f"{model_cfg['name']}[tp{self.serve_cfg.get('tp', 1)}pp{self.serve_cfg.get('pp', 1)}dp{self.serve_cfg.get('dp', 1)}]"
 
     def _get_text_only_cases(self) -> list[dict]:
         import yaml
@@ -307,7 +311,7 @@ class InferWorker(Worker):
 
         correct_ratio = self._chat_completion()
         return {
-            "Model": self.model_cfg["name"],
+            "Model": self.model_tag,
             "Correct Ratio": str(correct_ratio * 100) + "%",
             "Stage": self.InferenceStatus.NORMAL_END.name,
             "Reason": "",
@@ -316,7 +320,7 @@ class InferWorker(Worker):
 
     def _warp_failure(self, e: str):
         return {
-            "Model": self.model_cfg["name"],
+            "Model": self.model_tag,
             "Correct Ratio": "0%",
             "Stage": self.status.name,
             "Reason": str(e),
