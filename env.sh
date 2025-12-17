@@ -1,6 +1,6 @@
 # setup MACA path
 DEFAULT_DIR="/opt/maca"
-export MACA_PATH=${1: -$DEFAULT_DIR}
+export MACA_PATH=${1:-$DEFAULT_DIR}
 
 # cu-bridge
 export CUCC_PATH="${MACA_PATH}/tools/cu-bridge"
