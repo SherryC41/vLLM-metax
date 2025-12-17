@@ -102,7 +102,7 @@ class ModelConfigManager:
             "--max-model-len",
             str(serve_config.get("max_model_len", 4096)),
             "--distributed-executor-backend",
-            serve_config.get("distributed_executor_backend", "ray"),
+            serve_config.get("distributed_executor_backend", "mp"),
         ]
 
         extra_args = serve_config.get("extra_args")
