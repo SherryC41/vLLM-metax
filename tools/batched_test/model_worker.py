@@ -111,10 +111,10 @@ class ModelConfigManager:
                 for key, value in extra_args.items():
                     cmd.append(str(key))
                     if value is not None:
-                        cmd.append(str(value))
+                        cmd.append(value)
             elif isinstance(extra_args, list):
                 for item in extra_args:
-                    cmd.append(str(item))
+                    cmd.append(item)
 
         return cmd
 
@@ -132,9 +132,10 @@ class ModelConfigManager:
             str(port),
             "--dataset-name",
             bench_cfg.get("dataset_name", "random"),
-            "--ignore-eos" if bench_cfg.get("ignore_eos") else "",
             "--trust-remote-code",
         ]
+        if bench_cfg.get("ignore_eos"):
+            bench_cmd.append("--ignore-eos")
         return bench_cmd
 
     def prepare_sweep_cmd(
@@ -159,9 +160,9 @@ class ModelConfigManager:
             "sweep",
             "serve",
             "--serve-cmd",
-            " ".join(serve_cmd),
+            shlex.join(serve_cmd),
             "--bench-cmd",
-            " ".join(bench_cmd),
+            shlex.join(bench_cmd),
             "--bench-params",
             param_file,
             "--output-dir",
