@@ -302,7 +302,8 @@ class InferWorker(Worker):
             self._cleanup()
 
     def _post_client_test(self):
-        self._check_api_service_ready(timeout=600, blocking=True)
+        timeout = self.model_cfg.get("timeout", 600)
+        self._check_api_service_ready(timeout=timeout, blocking=True)
 
         correct_ratio = self._chat_completion()
         return {
