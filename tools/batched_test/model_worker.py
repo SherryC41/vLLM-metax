@@ -111,7 +111,7 @@ class ModelConfigManager:
                 for key, value in extra_args.items():
                     cmd.append(str(key))
                     if value is not None:
-                        cmd.append(value)
+                        cmd.append(str(value))
             elif isinstance(extra_args, list):
                 for item in extra_args:
                     cmd.append(item)
@@ -352,7 +352,7 @@ class InferWorker(Worker):
 
         # Log the command and environment
         with open(log_file, "a") as f:
-            cmd_str = f"[{self.model_cfg['name']}] command: {' '.join(cmd)}"
+            cmd_str = f"[{self.model_cfg['name']}] command: {shlex.join(cmd)}"
             f.write(cmd_str + "\n" + "-" * 80 + "\n")
             f.write(extra_env.__str__() + "\n" + "-" * 80 + "\n")
             f.flush()
