@@ -9,6 +9,14 @@ import torch
 from vllm.config import VllmConfig
 from vllm.config.cache import CacheDType
 from vllm.logger import init_logger
+from vllm_metax.model_executor.layers.attention.mla_attention import (
+    MLACommonBackend,
+    MLACommonDecodeMetadata,
+    MLACommonImpl,
+    MLACommonMetadata,
+    MLACommonMetadataBuilder,
+    QueryLenSupport,
+)
 from vllm.model_executor.layers.batch_invariant import (
     vllm_is_batch_invariant,
 )
@@ -18,14 +26,6 @@ from vllm.v1.attention.backend import (
     AttentionLayer,
     AttentionType,
     MultipleOf,
-)
-from vllm_metax.v1.attention.backends.mla.common import (
-    MLACommonBackend,
-    MLACommonDecodeMetadata,
-    MLACommonImpl,
-    MLACommonMetadata,
-    MLACommonMetadataBuilder,
-    QueryLenSupport,
 )
 from vllm.v1.attention.backends.utils import (
     reshape_attn_output_for_spec_decode,
@@ -314,8 +314,10 @@ class FlashMLAImpl(MLACommonImpl[FlashMLAMetadata]):
             num_splits=num_splits,
             softmax_scale=self.scale,
             causal=True,
-            descale_q=layer._q_scale.reshape(1),
-            descale_k=layer._k_scale.reshape(1),
+            # ------------------------------------------------
+            # Note: flashmla on maca does not support fp8 descale yet
+            # descale_q=layer._q_scale.reshape(1),
+            # descale_k=layer._k_scale.reshape(1),
         )
 
         o = reshape_attn_output_for_spec_decode(o)
