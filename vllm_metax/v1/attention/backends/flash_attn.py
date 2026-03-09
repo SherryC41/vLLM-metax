@@ -10,7 +10,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from vllm.attention.layer import Attention
+from vllm.model_executor.layers.attention import Attention
 from vllm.v1.attention.backend import (
     AttentionBackend,
     AttentionImpl,
@@ -68,6 +68,7 @@ from vllm_metax.model_executor.layers.attention.mla_attention import QueryLenSup
 
 logger = init_logger(__name__)
 from vllm.v1.attention.backends.registry import AttentionBackendEnum, register_backend
+import vllm_metax.envs as mx_envs
 
 
 @register_backend(AttentionBackendEnum.FLASH_ATTN)
@@ -839,52 +840,76 @@ class FlashAttentionImpl(AttentionImpl):
                     if self.sliding_window is not None
                     else None
                 )
-                # ┌------------------------  Metax Modification -------------------------┐
-                # For handling prefill decode split
-                num_decode_tokens = attn_metadata.num_decode_tokens
-                if attn_metadata.num_prefills > 0:
-                    output[num_decode_tokens:num_actual_tokens] = (
-                        flash_attn_varlen_func(
-                            q=query[num_decode_tokens:num_actual_tokens],
-                            k=key_cache,
-                            v=value_cache,
-                            cu_seqlens_q=attn_metadata.prefill_query_start_loc,
-                            cu_seqlens_k=attn_metadata.cu_prefix_kv_lens,
-                            max_seqlen_q=attn_metadata.max_query_len,
-                            max_seqlen_k=attn_metadata.prefill_max_seq_len,
+                if mx_envs.VLLM_METAX_ENABLE_FA_SPLIT_FORWARD:
+                    # ┌------------------------  Metax Modification -------------------------┐
+                    # For handling prefill decode split
+                    num_decode_tokens = attn_metadata.num_decode_tokens
+                    if attn_metadata.num_prefills > 0:
+                        output[num_decode_tokens:num_actual_tokens] = (
+                            flash_attn_varlen_func(
+                                q=query[num_decode_tokens:num_actual_tokens],
+                                k=key_cache,
+                                v=value_cache,
+                                cu_seqlens_q=attn_metadata.prefill_query_start_loc,
+                                cu_seqlens_k=attn_metadata.cu_prefix_kv_lens,
+                                max_seqlen_q=attn_metadata.max_query_len,
+                                max_seqlen_k=attn_metadata.prefill_max_seq_len,
+                                softmax_scale=self.scale,
+                                causal=attn_metadata.causal,
+                                alibi_slopes=self.alibi_slopes,
+                                window_size=sliding_window_size,
+                                block_table=attn_metadata.prefill_block_table,
+                                softcap=self.logits_soft_cap,
+                                s_aux=self.sinks,
+                            )
+                        )
+                    if attn_metadata.num_decodes > 0:
+                        # Use flash_attn_with_kvcache for normal decoding.
+                        decode_query = query[:num_decode_tokens]
+                        decode_query = reshape_query_for_spec_decode(
+                            decode_query, attn_metadata.num_decodes
+                        )
+                        output_unreshape = flash_attn_with_kvcache(
+                            q=decode_query,
+                            k_cache=key_cache,
+                            v_cache=value_cache,
+                            block_table=attn_metadata.decode_block_table,
+                            cache_seqlens=attn_metadata.decode_seq_lens,
                             softmax_scale=self.scale,
-                            causal=attn_metadata.causal,
+                            causal=True,
+                            window_size=sliding_window_size,
                             alibi_slopes=self.alibi_slopes,
-                            window_size=self.sliding_window,
-                            block_table=attn_metadata.prefill_block_table,
                             softcap=self.logits_soft_cap,
                             s_aux=self.sinks,
                         )
-                    )
-                if attn_metadata.num_decodes > 0:
-                    # Use flash_attn_with_kvcache for normal decoding.
-                    decode_query = query[:num_decode_tokens]
-                    decode_query = reshape_query_for_spec_decode(
-                        decode_query, attn_metadata.num_decodes
-                    )
-                    output_unreshape = flash_attn_with_kvcache(
-                        q=decode_query,
-                        k_cache=key_cache,
-                        v_cache=value_cache,
-                        block_table=attn_metadata.decode_block_table,
-                        cache_seqlens=attn_metadata.decode_seq_lens,
+                        output[:num_decode_tokens] = (
+                            reshape_attn_output_for_spec_decode(output_unreshape)
+                        )
+                    return output
+                # └------------------------- Metax Modification -------------------------┘
+                else:
+                    cu_seqlens_k = F.pad(
+                        attn_metadata.seq_lens,
+                        (1, 0),
+                        value=0,
+                    ).cumsum(dim=0, dtype=torch.int32)
+
+                    output[:num_actual_tokens] = flash_attn_varlen_func(
+                        q=query[:num_actual_tokens],
+                        k=key_cache,
+                        v=value_cache,
+                        cu_seqlens_q=cu_seqlens_q,
+                        max_seqlen_q=max_seqlen_q,
+                        cu_seqlens_k=cu_seqlens_k,
+                        max_seqlen_k=max_seqlen_k,
                         softmax_scale=self.scale,
                         causal=True,
-                        window_size=self.sliding_window,
                         alibi_slopes=self.alibi_slopes,
+                        window_size=sliding_window_size,
+                        block_table=block_table,
                         softcap=self.logits_soft_cap,
-                        s_aux=self.sinks,
                     )
-                    output[:num_decode_tokens] = reshape_attn_output_for_spec_decode(
-                        output_unreshape
-                    )
-                return output
-            # └------------------------- Metax Modification -------------------------┘
+                    return output
 
         # Cascade attention (rare case).
         cascade_attention(
@@ -926,16 +951,6 @@ class FlashAttentionImpl(AttentionImpl):
         if self.attn_type in (AttentionType.ENCODER_ONLY, AttentionType.ENCODER):
             # For encoder attention,
             # we use direct Q, K, V tensors without caching
-            return
-
-        # key and value may be None in the case of cross attention. They are
-        # calculated once based on the output from the encoder and then cached
-        # in KV cache.
-        if (
-            self.kv_sharing_target_layer_name is not None
-            or key is None
-            or value is None
-        ):
             return
 
         key_cache, value_cache = kv_cache.unbind(0)

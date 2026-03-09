@@ -1,9 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
+
+# -----------------------------------------------------------
+# Note: This patch is to add mp_linear_kernel for oot dispatch
+# -----------------------------------------------------------
+
 from vllm.model_executor.layers.quantization.kernels.mixed_precision import (
     ExllamaLinearKernel as vllm_ExllamaLinearKernel,
     MPLinearLayerConfig,
 )
-from vllm.platforms import current_platform
+from vllm.platforms import PlatformEnum, current_platform
 
 import torch
 
@@ -18,7 +23,7 @@ class MacaExllamaLinearKernel(vllm_ExllamaLinearKernel):
         if not current_platform.is_cuda_alike():
             return (
                 False,
-                "Exllama is only supported on CUDA and ROCm",
+                "Exllama is only supported on CUDA and ROCm and Maca",
             )
 
         if c.has_g_idx and c.partition_weight_shape[0] != c.full_weight_shape[0]:
@@ -99,6 +104,6 @@ class MacaExllamaLinearKernel(vllm_ExllamaLinearKernel):
 
 import vllm.model_executor.layers.quantization.kernels.mixed_precision
 
-vllm.model_executor.layers.quantization.kernels.mixed_precision._POSSIBLE_KERNELS = [
-    MacaExllamaLinearKernel
-]
+vllm.model_executor.layers.quantization.kernels.mixed_precision._POSSIBLE_KERNELS = {
+    PlatformEnum.OOT: [MacaExllamaLinearKernel]
+}
