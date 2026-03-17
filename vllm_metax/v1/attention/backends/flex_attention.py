@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Attention layer with FlexAttention."""
 
@@ -82,7 +83,7 @@ class MacaFlexAttentionBackend(AttentionBackend):
         torch.bfloat16,
         torch.float32,
     ]
-    supported_kv_cache_dtypes: ClassVar[list[CacheDType]] = ["auto"]
+    supported_kv_cache_dtypes: ClassVar[list[CacheDType]] = ["auto", "bfloat16"]
 
     @staticmethod
     def get_name() -> str:

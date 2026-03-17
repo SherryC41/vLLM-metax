@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
 
 # ------------------------------------------------------------------------
 # Note: This file is a patch for vLLM to support `MACA_VISIBLE_DEVICES`.
@@ -20,9 +21,10 @@ from unittest.mock import patch
 from vllm.config import VllmConfig
 
 
-def update_environment_variables_with_maca(
-    self, envs_list: List[Dict[str, str]]
-) -> None:
+# ----------------------------------------------------
+# TODO(hank): need to check vllm PR#33308 to see
+# if this patch is still needed after the PR is merged.
+def update_environment_variables(self, envs_list: List[Dict[str, str]]) -> None:
     envs = envs_list[self.rpc_rank]
     key = "CUDA_VISIBLE_DEVICES"
     # /------------------------  Metax Modification -------------------------\
@@ -36,7 +38,7 @@ def update_environment_variables_with_maca(
 
 
 @contextlib.contextmanager
-def set_device_control_env_var_with_maca(
+def set_device_control_env_var(
     vllm_config: VllmConfig, local_dp_rank: int
 ) -> Iterator[None]:
     """
@@ -57,5 +59,5 @@ def set_device_control_env_var_with_maca(
 
 from vllm.v1.engine import utils
 
-WorkerWrapperBase.update_environment_variables = update_environment_variables_with_maca
-utils.set_device_control_env_var = set_device_control_env_var_with_maca
+WorkerWrapperBase.update_environment_variables = update_environment_variables
+utils.set_device_control_env_var = set_device_control_env_var

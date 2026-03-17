@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
 # --------------------------------------------------
 # This hotfix is to revert:
 #   https://github.com/vllm-project/vllm/pull/34003
@@ -54,7 +55,7 @@ def compile(
     if graph_index == 0:
         # before compiling the first graph, record the start time
         global compilation_start_time
-        compilation_start_time = time.time()
+        compilation_start_time = time.perf_counter()
 
     compilation_counter.num_backend_compilations += 1
 
@@ -66,8 +67,7 @@ def compile(
         if graph_index == num_graphs - 1:
             # after loading the last graph for this shape, record the time.
             # there can be multiple graphs due to piecewise compilation.
-            now = time.time()
-            elapsed = now - compilation_start_time
+            elapsed = time.perf_counter() - compilation_start_time
             compilation_config.compilation_time += elapsed
             logger.info_once(
                 "Directly load the compiled graph(s) for compile range %s "
@@ -118,8 +118,7 @@ def compile(
 
     # after compiling the last graph, record the end time
     if graph_index == num_graphs - 1:
-        now = time.time()
-        elapsed = now - compilation_start_time
+        elapsed = time.perf_counter() - compilation_start_time
         compilation_config.compilation_time += elapsed
         logger.info_once(
             "Compiling a graph for compile range %s takes %.2f s",

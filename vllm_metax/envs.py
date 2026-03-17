@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
 
 import os
 from typing import TYPE_CHECKING, Any, Callable
@@ -11,6 +12,7 @@ if TYPE_CHECKING:
     VLLM_TEST_USE_PRECOMPILED_NIGHTLY_WHEEL: bool = False
     CMAKE_BUILD_TYPE: str | None
     VERBOSE: bool = False
+    USE_PRECOMPILED_KERNEL: bool = True
     MACA_DP_OPT: bool = False
     MACA_VLLM_ENABLE_MCTLASS_PYTHON_API: bool = False
     MACA_VLLM_ENABLE_MCTLASS_FUSED_MOE: bool = False

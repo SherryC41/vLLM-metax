@@ -1,17 +1,21 @@
 # SPDX-License-Identifier: Apache-2.0
+# 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
 """Code inside this file can safely assume cuda platform, e.g. importing
 pynvml. However, it should not initialize cuda context.
 """
 
-import contextlib
 import importlib
+import math
 import os
 from collections.abc import Callable
+from datetime import timedelta
 from functools import cache, wraps
 from pathlib import Path
 from typing import TYPE_CHECKING, TypeVar, Optional
 
 import torch
+from torch.distributed import PrefixStore, ProcessGroup
+from torch.distributed.distributed_c10d import is_nccl_available
 from typing_extensions import ParamSpec
 
 import vllm_metax.envs as mx_envs
@@ -47,6 +51,7 @@ torch.backends.cuda.enable_cudnn_sdp(False)
 def _get_backend_priorities(
     use_mla: bool,
     device_capability: DeviceCapability,
+    num_heads: int | None = None,
 ) -> list[AttentionBackendEnum]:
     """Get backend priorities with lazy import to avoid circular dependency."""
     from vllm.v1.attention.backends.registry import AttentionBackendEnum
@@ -310,6 +315,22 @@ class MacaPlatformBase(Platform):
             scheduler_config.disable_chunked_mm_input = True
 
         # -------------------------------------------------------
+        # Ensure that the value of `attn_block_size` is a power of 2.
+        if (
+            model_config is not None
+            and model_config.is_hybrid
+            and not math.log2(cache_config.block_size).is_integer()
+        ):
+            # reinitialize block size to the next power of 2
+            from vllm_metax.configs.hybrid_attn_mamba_config import (
+                HybridAttentionMambaModelConfigWithAlignedBlockSize,
+            )
+
+            HybridAttentionMambaModelConfigWithAlignedBlockSize.verify_and_update_config(
+                vllm_config
+            )
+
+        # -------------------------------------------------------
         # Append sparse attention op for Maca platform
         if compilation_config is not None:
             compilation_config._attention_ops.append("vllm::mx_sparse_attn_indexer")
@@ -363,6 +384,7 @@ class MacaPlatformBase(Platform):
         cls,
         device_capability: DeviceCapability,
         attn_selector_config: "AttentionSelectorConfig",
+        num_heads: int | None = None,
     ) -> tuple[
         list[tuple["AttentionBackendEnum", int]],
         dict["AttentionBackendEnum", list[str]],
@@ -371,7 +393,7 @@ class MacaPlatformBase(Platform):
         invalid_reasons = {}
 
         backend_priorities = _get_backend_priorities(
-            attn_selector_config.use_mla, device_capability
+            attn_selector_config.use_mla, device_capability, num_heads=num_heads
         )
         for priority, backend in enumerate(backend_priorities):
             try:
@@ -394,6 +416,7 @@ class MacaPlatformBase(Platform):
         cls,
         selected_backend: "AttentionBackendEnum",
         attn_selector_config: "AttentionSelectorConfig",
+        num_heads: int | None = None,
     ) -> str:
         register_attention_backends()
         device_capability = cls.get_device_capability()
@@ -424,6 +447,7 @@ class MacaPlatformBase(Platform):
         valid_backends_priorities, invalid_reasons = cls.get_valid_backends(
             device_capability=device_capability,
             attn_selector_config=attn_selector_config,
+            num_heads=num_heads,
         )
         reasons_str = (
             "{"
@@ -528,6 +552,37 @@ class MacaPlatformBase(Platform):
         return "vllm.compilation.cuda_graph.CUDAGraphWrapper"
 
     @classmethod
+    def stateless_init_device_torch_dist_pg(
+        cls,
+        backend: str,
+        prefix_store: PrefixStore,
+        group_rank: int,
+        group_size: int,
+        timeout: timedelta,
+    ) -> ProcessGroup:
+        assert is_nccl_available()
+        pg: ProcessGroup = ProcessGroup(
+            prefix_store,
+            group_rank,
+            group_size,
+        )
+        from torch.distributed.distributed_c10d import ProcessGroupNCCL
+
+        backend_options = ProcessGroupNCCL.Options()
+        backend_options._timeout = timeout
+
+        backend_class = ProcessGroupNCCL(
+            prefix_store, group_rank, group_size, backend_options
+        )
+        backend_type = ProcessGroup.BackendType.NCCL
+        device = torch.device("cuda")
+        pg._set_default_backend(backend_type)
+        backend_class._set_sequence_number_for_group()
+
+        pg._register_backend(device, backend_type, backend_class)
+        return pg
+
+    @classmethod
     def device_count(cls) -> int:
         return cuda_device_count_stateless()
 
@@ -569,12 +624,16 @@ class MacaPlatformBase(Platform):
         return True
 
     @classmethod
+    def num_compute_units(cls, device_id=0):
+        return torch.cuda.get_device_properties(device_id).multi_processor_count
+
+    @classmethod
     def pre_register_and_update(
         cls, parser: FlexibleArgumentParser | None = None
     ) -> None:
         """Pre-register and update Maca platform."""
         register_attention_backends()
-        # TODO(m01016): update cudagraph max capture size  here
+        # TODO(m01016): update cudagraph max capture size here
 
 
 # NVML utils
@@ -722,6 +781,10 @@ MacaPlatform.log_warnings()
 # Note: Put all env Override here for Maca platform
 mx_envs.override_vllm_env(
     "VLLM_USE_FLASHINFER_SAMPLER", False, "flashinfer sampler are not supported on maca"
+)
+
+mx_envs.override_vllm_env(
+    "VLLM_ENGINE_READY_TIMEOUT_S", 3600, "set timeout to 3600s for model loading"
 )
 
 # --------------------------------------------------

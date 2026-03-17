@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-
-from typing import Optional
+# 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
 
 import torch
 
@@ -22,8 +21,16 @@ class MacaCompressedTensorsConfig(vllm_ct.CompressedTensorsConfig):
         self,
         layer: torch.nn.Module,
         prefix: str,
-    ) -> Optional["QuantizeMethodBase"]:
-        origin_quant_method = super().get_quant_method(layer, prefix)
+    ) -> "QuantizeMethodBase | None":
+        try:
+            origin_quant_method = super().get_quant_method(layer, prefix)
+        except ValueError:
+            # Note: w4a8 may trigger ValueError in the CompressedTensorsMoEMethod,
+            # but we'd handle it in our custom method below.
+            # So we catch the exception and ensure it's a FusedMoE layer.
+            assert isinstance(layer, FusedMoE)
+        except Exception:
+            raise
 
         # Replace with Metax's MoE quantization methods
         if isinstance(layer, FusedMoE):

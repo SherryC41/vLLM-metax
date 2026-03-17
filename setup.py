@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
 
 import importlib.util
 import logging
@@ -287,7 +288,7 @@ def get_maca_version() -> Version:
 
 
 def fixed_version_scheme(version: ScmVersion) -> str:
-    return "0.16.0"
+    return "0.17.0"
 
 
 def always_hash(version: ScmVersion) -> str:

@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 from vllm.v1.attention.backends.fa_utils import logger
@@ -14,7 +15,9 @@ if current_platform.is_out_of_tree():
     reshape_and_cache_flash = ops.reshape_and_cache_flash
 
 
-def get_flash_attn_version(requires_alibi: bool = False) -> int | None:
+def get_flash_attn_version(
+    requires_alibi: bool = False, head_size: int | None = None
+) -> int | None:
     logger.info_once(
         "Using Maca version of flash attention, which only supports version 2."
     )

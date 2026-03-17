@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
+# 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
 
 # -----------------------------------------------------------
 # Note: This patch is to add mp_linear_kernel for oot dispatch
 # -----------------------------------------------------------
 
-from vllm.model_executor.layers.quantization.kernels.mixed_precision import (
+from vllm.model_executor.kernels.linear.mixed_precision.exllama import (
     ExllamaLinearKernel as vllm_ExllamaLinearKernel,
     MPLinearLayerConfig,
 )
@@ -102,8 +103,8 @@ class MacaExllamaLinearKernel(vllm_ExllamaLinearKernel):
         )
 
 
-import vllm.model_executor.layers.quantization.kernels.mixed_precision
+import vllm.model_executor.kernels.linear
 
-vllm.model_executor.layers.quantization.kernels.mixed_precision._POSSIBLE_KERNELS = {
+vllm.model_executor.kernels.linear._POSSIBLE_KERNELS = {
     PlatformEnum.OOT: [MacaExllamaLinearKernel]
 }
