@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     MACA_VLLM_ENABLE_MCTLASS_FUSED_MOE: bool = False
     USE_VLLM_TRITON_EXPERT: bool = False
     VLLM_METAX_ENABLE_FA_SPLIT_FORWARD: bool = True
+    VLLM_FUSED_MOE_CHUNK_SIZE: int = 16 * 1024
 
 environment_variables: dict[str, Callable[[], Any]] = {
     # ================== Installation Time Env Vars ==================
@@ -54,7 +55,7 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # ================== Runtime Env Vars ==================
     # if set, enable mctlass python api, only support scaled_mm and moe_w8a8 int8
     "MACA_VLLM_ENABLE_MCTLASS_PYTHON_API": lambda: bool(
-        int(os.getenv("MACA_VLLM_ENABLE_MCTLASS_PYTHON_API", "0"))
+        int(os.getenv("MACA_VLLM_ENABLE_MCTLASS_PYTHON_API", "1"))
     ),
     # if set, enable bf16 cutlass moe on stage2
     # or w8a8 cutlass moe on both stage1 and stage2
@@ -62,12 +63,15 @@ environment_variables: dict[str, Callable[[], Any]] = {
         int(os.getenv("MACA_VLLM_ENABLE_MCTLASS_FUSED_MOE", "0"))
     ),
     # if set, enable combine allreduce all2all
-    "MACA_DP_OPT": lambda: bool(int(os.environ.get("MACA_DP_OPT", "0"))),
+    "MACA_DP_OPT": lambda: bool(int(os.environ.get("MACA_DP_OPT", "1"))),
     # if set, enable FA split forward into
     # prefill and decode for better latency
     # and memory usage during decoding
     "VLLM_METAX_ENABLE_FA_SPLIT_FORWARD": lambda: bool(
         int(os.environ.get("VLLM_METAX_ENABLE_FA_SPLIT_FORWARD", "1"))
+    ),
+    "VLLM_FUSED_MOE_CHUNK_SIZE": lambda: int(
+        os.getenv("VLLM_FUSED_MOE_CHUNK_SIZE", str(16 * 1024))
     ),
     # =================== Debug Env Vars ==================
     # if set, use vllm's fused_moe implementation instead of maca's one for debugging and comparison

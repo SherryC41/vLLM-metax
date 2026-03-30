@@ -1904,7 +1904,7 @@ def fused_experts_impl(
     top_k_num = topk_ids.size(1)
     # We execute the fused_moe kernel in chunks to circumvent this issue:
     # https://github.com/vllm-project/vllm/issues/5938
-    CHUNK_SIZE = envs.VLLM_FUSED_MOE_CHUNK_SIZE
+    CHUNK_SIZE = mx_envs.VLLM_FUSED_MOE_CHUNK_SIZE
     M = min(num_tokens, CHUNK_SIZE)
 
     # ---------------------------------------------------------------
@@ -2269,7 +2269,7 @@ class TritonExperts(mk.FusedMoEExpertsModular):
 
     @staticmethod
     def _supports_no_act_and_mul() -> bool:
-        return False
+        return True
 
     @staticmethod
     def _supports_quant_scheme(
@@ -2284,8 +2284,10 @@ class TritonExperts(mk.FusedMoEExpertsModular):
         else:
             is_rocm_on_gfx9 = False
 
-        device_supports_fp8 = is_rocm_on_gfx9 or (
-            p.is_cuda() and p.has_device_capability((8, 9))
+        device_supports_fp8 = (
+            is_rocm_on_gfx9
+            or (p.is_cuda() and p.has_device_capability((8, 9)))
+            or p.is_xpu()
         )
 
         if not device_supports_fp8:
@@ -2308,14 +2310,17 @@ class TritonExperts(mk.FusedMoEExpertsModular):
             MoEActivation.GELU,
             MoEActivation.SWIGLUOAI,
             MoEActivation.SWIGLUSTEP,
+            MoEActivation.SILU_NO_MUL,
+            MoEActivation.GELU_NO_MUL,
+            MoEActivation.RELU2_NO_MUL,
         ]
 
     @staticmethod
     def _supports_parallel_config(moe_parallel_config: FusedMoEParallelConfig) -> bool:
-        return not moe_parallel_config.use_fi_all2allv_kernels
-
-    def supports_chunking(self) -> bool:
-        return True
+        return not (
+            moe_parallel_config.use_fi_nvl_two_sided_kernels
+            or moe_parallel_config.use_fi_nvl_one_sided_kernels
+        )
 
     def supports_expert_map(self) -> bool:
         return True
