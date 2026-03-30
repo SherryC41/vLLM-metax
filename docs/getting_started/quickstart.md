@@ -13,7 +13,7 @@ You could get the docker image at [MetaX develop community](https://developer.me
 
     If you want build the latest vllm-metax, please refer to [installation](./installation/maca.md) to build from source.
 
-    **Please always use mcoplib for production usage.**
+    ***Please always use mcoplib for production usage.***
 
 ## Releases
 
