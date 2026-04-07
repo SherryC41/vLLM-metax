@@ -25,6 +25,7 @@ class MacaDPCoordinatorProc(DPCoordinatorProc):
         front_publish_address: str,
         back_output_address: str,
         back_publish_address: str,
+        zmq_addr_pipe=None,
         min_stats_update_interval_ms: int = 100,
         enable_wave_coordination: bool = True,
     ):
@@ -40,15 +41,20 @@ class MacaDPCoordinatorProc(DPCoordinatorProc):
                 front_publish_address,
                 back_output_address,
                 back_publish_address,
+                zmq_addr_pipe,
             )
         except KeyboardInterrupt:
             logger.info("DP Coordinator process exiting")
+        finally:
+            if zmq_addr_pipe is not None:
+                zmq_addr_pipe.close()
 
     def process_input_socket(
         self,
         front_publish_address: str,
         back_output_address: str,
         back_publish_address: str,
+        zmq_addr_pipe=None,
     ):
         decoder = MsgpackDecoder(EngineCoreOutputs)
 
@@ -82,6 +88,17 @@ class MacaDPCoordinatorProc(DPCoordinatorProc):
                 bind=True,
             ) as publish_back,
         ):
+            if zmq_addr_pipe is not None:
+                try:
+                    zmq_addr_pipe.send(
+                        (
+                            publish_front.getsockopt(zmq.LAST_ENDPOINT).decode(),
+                            output_back.getsockopt(zmq.LAST_ENDPOINT).decode(),
+                            publish_back.getsockopt(zmq.LAST_ENDPOINT).decode(),
+                        )
+                    )
+                finally:
+                    zmq_addr_pipe.close()
             # Wait until all engines subscribe.
             for _ in self.engines:
                 if publish_back.recv() != b"\x01":

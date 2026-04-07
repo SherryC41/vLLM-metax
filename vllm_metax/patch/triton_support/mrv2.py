@@ -14,7 +14,7 @@ def _load_ptr_i32(ptr_to_ptr):
     return tl.cast(ptr, tl.pointer_type(tl.int32))
 
 
-@triton.jit
+@triton.jit(do_not_specialize=["num_reqs"])
 def _gather_block_tables_kernel(
     batch_idx_to_req_idx,  # [batch_size]
     src_block_table_ptrs,  # [num_kv_cache_groups]

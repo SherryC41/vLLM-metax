@@ -75,12 +75,8 @@ class MctlassScaledMMLinearKernel(CutlassInt8ScaledMMLinearKernel):
         )
 
 
-# /------------------------  Metax Modification ----------------------------\
-_POSSIBLE_INT8_KERNELS: dict[PlatformEnum, list[type[ScaledMMLinearKernel]]] = {
-    PlatformEnum.OOT: [MctlassScaledMMLinearKernel]
-}
-# \------------------------- Metax Modification ----------------------------/
-
 import vllm.model_executor.kernels.linear
 
-vllm.model_executor.kernels.linear._POSSIBLE_INT8_KERNELS = _POSSIBLE_INT8_KERNELS
+vllm.model_executor.kernels.linear._POSSIBLE_INT8_KERNELS = {
+    PlatformEnum.OOT: [MctlassScaledMMLinearKernel]
+}

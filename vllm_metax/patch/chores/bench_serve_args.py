@@ -337,7 +337,18 @@ def add_cli_args(parser: argparse.ArgumentParser):
         default=None,
         help="A subset of LoRA module names passed in when "
         "launching the server. For each request, the "
-        "script chooses a LoRA module at random.",
+        "script chooses a LoRA module at random by default. "
+        "Use --lora-assignment to control selection strategy.",
+    )
+
+    parser.add_argument(
+        "--lora-assignment",
+        type=str,
+        default="random",
+        choices=["random", "round-robin"],
+        help="Strategy for assigning LoRA modules to requests. "
+        "'random' (default) selects a LoRA at random for each request. "
+        "'round-robin' cycles through LoRA modules deterministically.",
     )
 
     parser.add_argument(
