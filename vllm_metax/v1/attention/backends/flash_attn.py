@@ -40,6 +40,7 @@ if is_flash_attn_varlen_func_available():
         reshape_and_cache_flash,
         flash_attn_with_kvcache,  # used for prefill decode split
     )
+import vllm.envs as envs
 from vllm.config import (
     VllmConfig,
     get_current_vllm_config,
@@ -49,9 +50,6 @@ from vllm.config import (
 from vllm.config.cache import CacheDType
 from vllm.distributed.parallel_state import get_dcp_group
 from vllm.logger import init_logger
-from vllm.model_executor.layers.batch_invariant import (
-    vllm_is_batch_invariant,
-)
 from vllm.platforms.interface import DeviceCapability
 from vllm.utils.math_utils import cdiv, round_up
 from vllm.v1.attention.backend import (
@@ -83,6 +81,11 @@ import vllm_metax.envs as mx_envs
 class MacaFlashAttentionBackend(AttentionBackend):
     accept_output_buffer: bool = True
     supported_dtypes: ClassVar[list[torch.dtype]] = [torch.float16, torch.bfloat16]
+    supported_kv_cache_dtypes: ClassVar[list[CacheDType]] = [
+        "auto",
+        "float16",
+        "bfloat16",
+    ]
 
     @staticmethod
     def get_supported_kernel_block_sizes() -> list[int | MultipleOf]:
@@ -426,7 +429,7 @@ class FlashAttentionMetadataBuilder(AttentionMetadataBuilder[FlashAttentionMetad
         # This allows FlashAttention to bucket queries of similar lengths together, which
         # is important for performance.
         #
-        # The `reorder_batch_threshold` is set to 128 by default to allow small prefill requests
+        # The `reorder_batch_threshold` is set to 1 by default to allow small prefill requests
         # to be processed through the decode pathway, which can be more efficient for short sequences.
         # If `group_decodes_by_query_len` is False, we will not perform this reordering and all decode
         # requests will be treated the same regardless of their query length, which may lead to suboptimal
@@ -629,7 +632,7 @@ class FlashAttentionMetadataBuilder(AttentionMetadataBuilder[FlashAttentionMetad
             cu_prefix_kv_lens = None
         # \------------------------- Metax Modification -------------------------/
 
-        if vllm_is_batch_invariant():
+        if envs.VLLM_BATCH_INVARIANT:
             max_num_splits = 1
 
         def schedule(
@@ -883,7 +886,7 @@ class FlashAttentionImpl(AttentionImpl):
             scope="local",
         )
         # Cache the batch invariant result for use in forward passes
-        self.batch_invariant_enabled = vllm_is_batch_invariant()
+        self.batch_invariant_enabled = envs.VLLM_BATCH_INVARIANT
 
         if is_quantized_kv_cache(self.kv_cache_dtype) and not flash_attn_supports_fp8():
             raise NotImplementedError(
