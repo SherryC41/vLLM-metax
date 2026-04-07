@@ -92,5 +92,7 @@ Build with *empty device*:
 
 ### Post build (Significant)
 
+=== "PIP"
+    --8<-- "docs/getting_started/installation/pip.inc.md:post-build"
 === "UV"
     --8<-- "docs/getting_started/installation/uv.inc.md:post-build"
