@@ -1403,7 +1403,7 @@ def get_default_config(
     dtype: str | None,
     block_shape: list[int] | None = None,
 ) -> dict[str, int]:
-    if vllm_is_batch_invariant():
+    if envs.VLLM_BATCH_INVARIANT:
         return {
             "BLOCK_SIZE_M": 64,
             "BLOCK_SIZE_N": 64,
@@ -2265,7 +2265,7 @@ class TritonExperts(mk.FusedMoEExpertsModular):
 
     @staticmethod
     def _supports_current_device() -> bool:
-        return current_platform.is_cuda_alike()
+        return current_platform.is_cuda_alike() or current_platform.is_xpu()
 
     @staticmethod
     def _supports_no_act_and_mul() -> bool:

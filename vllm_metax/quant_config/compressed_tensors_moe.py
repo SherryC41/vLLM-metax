@@ -19,6 +19,9 @@ from vllm.model_executor.layers.quantization.utils.quant_utils import GroupShape
 
 from vllm.model_executor.utils import set_weight_attrs
 from vllm.model_executor.layers.fused_moe.activation import MoEActivation
+from vllm_metax.customized.layers.unquantized_fused_moe_method import (
+    UnquantizedFusedMoEMethod,
+)
 
 
 # -----------------------------------------------------------
@@ -53,9 +56,8 @@ class CompressedTensorsMoEMethod(vllm_ctm.CompressedTensorsMoEMethod):
                 "quantization scheme but found multiple"
             )
 
-        # for drafter model which is non-quantized
-        if scheme_dict is None:
-            return None
+        if scheme_dict is None:  # ignored layer
+            return UnquantizedFusedMoEMethod(layer.moe_config)
 
         weight_quant = scheme_dict.get("weights")
         input_quant = scheme_dict.get("input_activations")
@@ -72,7 +74,8 @@ class CompressedTensorsMoEMethod(vllm_ctm.CompressedTensorsMoEMethod):
             )
         except ValueError:
             # only handle CompressedTensorsW4A8Int4MoEMethod
-            assert quant_config._is_dynamic_token_w4a8_int(weight_quant, input_quant)
+            if not quant_config._is_dynamic_token_w4a8_int(weight_quant, input_quant):
+                raise
         except Exception:
             raise
 
@@ -162,7 +165,6 @@ class CompressedTensorsWNA16MoEMethod(vllm_ctm.CompressedTensorsWNA16MoEMethod):
 
                 layer.w13_weight = layer.w13_weight_packed
                 layer.w2_weight = layer.w2_weight_packed
-
                 return TritonWNA16Experts(
                     moe_config=self.moe, quant_config=self.moe_quant_config
                 )
