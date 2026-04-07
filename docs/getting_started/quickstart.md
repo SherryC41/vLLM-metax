@@ -5,7 +5,7 @@ Currently the recommanded way to start ***vLLM-MetaX*** is via *docker*.
 You could get the docker image at [MetaX develop community](https://developer.metax-tech.com/softnova/docker?chip_name=%E6%9B%A6%E4%BA%91C500%E7%B3%BB%E5%88%97&package_kind=AI&dimension=docker&deliver_type=%E5%88%86%E5%B1%82%E5%8C%85&ai_frame=vllm-metax&arch=amd64&system=ubuntu).
 
 !!! note
-    After v0.11.2, vllm-metax moved its `_C` and `_moe_C` kernel into a separate package named `mcoplib`. 
+    After v0.11.2, vllm-metax moved its `_C` and `_moe_C` kernels into a separate package named `mcoplib`. 
     
     **mcoplib** is open-sourced at [MetaX-mcoplib](https://github.com/MetaX-MACA/mcoplib) and would maintain its own release cycle. Please always install the corresponding version of mcoplib when using vLLM-MetaX.
 
@@ -33,6 +33,7 @@ You could get the docker image at [MetaX develop community](https://developer.me
 |v0.16.0         | N/A | N/A | **Skipped** |
 |v0.17.0         |maca3.5.3.x   | 0.4.1+ | *WIP* |
 |v0.18.0         |maca3.5.3.x   | 0.4.1+ | *WIP* |
+|v0.19.0         |maca3.5.3.x   | 0.4.1+ | *WIP* |
 
 !!! warning "Usage Warning"
     **vLLM-MetaX is out of box via docker images provided above.**
