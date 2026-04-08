@@ -17,9 +17,6 @@ import vllm.envs as envs
 import vllm_metax.envs as mx_envs
 import vllm.model_executor.layers.fused_moe.modular_kernel as mk
 from vllm import _custom_ops as ops
-from vllm.model_executor.layers.batch_invariant import (
-    vllm_is_batch_invariant,
-)
 from vllm.model_executor.layers.fused_moe.activation import (
     MoEActivation,
     apply_moe_activation,
@@ -1207,7 +1204,7 @@ def get_moe_configs(
     """
 
     # Avoid optimizing for the batch invariant case. Use default config
-    if vllm_is_batch_invariant():
+    if envs.VLLM_BATCH_INVARIANT:
         return None
 
     # First look up if an optimized configuration is available in the configs

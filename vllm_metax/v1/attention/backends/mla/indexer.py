@@ -78,7 +78,7 @@ def split_indexer_prefill_chunks(
     return chunks
 
 
-class DeepseekV32IndexerBackend(AttentionBackend):
+class MacaDeepseekV32IndexerBackend(AttentionBackend):
     @staticmethod
     def get_name() -> str:
         return "DEEPSEEK_V32_INDEXER"
