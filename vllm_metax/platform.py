@@ -143,6 +143,8 @@ class MacaPlatformBase(Platform):
         "moe_wna16",
         "gguf",
     ]
+    if mx_envs.VLLM_METAX_USE_FP8_SPARSE_ATTN_INDEXER:
+        supported_quantization.append("fp8")
 
     @classmethod
     def set_device(cls, device: torch.device) -> None:
@@ -490,7 +492,7 @@ class MacaPlatformBase(Platform):
 
     @classmethod
     def supports_fp8(cls) -> bool:
-        return False
+        return mx_envs.VLLM_METAX_USE_FP8_SPARSE_ATTN_INDEXER
 
     @classmethod
     def use_custom_allreduce(cls) -> bool:

@@ -10,6 +10,8 @@ from vllm.platforms import current_platform
 
 logger = init_logger(__name__)
 
+import flash_mla
+
 
 def _is_flashmla_available() -> tuple[bool, str | None]:
     """
@@ -45,12 +47,12 @@ def _raise_flashmla_unavailable(*_args, **_kwargs):
 
 if _is_flashmla_available()[0]:
     from flash_mla.flash_mla_interface import (  # noqa: F401
-        flash_mla_sparse_fwd,
+        # flash_mla_sparse_fwd,
         flash_mla_with_kvcache,
         get_mla_metadata,
     )
 else:
-    flash_mla_sparse_fwd = _raise_flashmla_unavailable  # type: ignore[assignment]
+    # flash_mla_sparse_fwd = _raise_flashmla_unavailable  # type: ignore[assignment]
     flash_mla_with_kvcache = _raise_flashmla_unavailable  # type: ignore[assignment]
     get_mla_metadata = _raise_flashmla_unavailable  # type: ignore[assignment]
 
@@ -81,6 +83,46 @@ def flash_mla_with_kvcache_fp8(
     raise NotImplementedError(
         "Maca does not support FlashMLA flash_mla_with_kvcache_fp8 yet."
     )
+
+
+def flash_mla_sparse_fwd(
+    q: torch.Tensor,
+    kv: torch.Tensor,
+    indices: torch.Tensor,
+    sm_scale: float,
+    d_v: int = 512,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Sparse attention prefill kernel
+
+    Args:
+    - q: [s_q, h_q, d_qk], bfloat16
+    - kv: [s_kv, h_kv, d_qk], bfloat16
+    - indices: [s_q, h_kv, topk], int32.
+        Invalid indices should be set to -1 or numbers >= s_kv
+    - sm_scale: float
+    - d_v: The dimension of value vectors. Can only be 512
+
+    Returns:
+    - (output, max_logits, lse)
+        About the definition of output,
+        max_logits and lse, please refer to README.md
+    - output: [s_q, h_q, d_v], bfloat16
+    - max_logits:  [s_q, h_q], float
+    - lse: [s_q, h_q], float, 2-based log-sum-exp
+    """
+    # TODO: MetaX flash_mla support
+    # /------------------------  Metax Modification -------------------------\
+    s_kv = kv.shape[0]
+    indices_valid = torch.logical_and(indices != -1, indices < s_kv)
+    # [s_q, h_kv, topk] -> [s_q, h_kv] -> [s_q, 1]
+    indices_all_valid_per_q = indices_valid.all(dim=2).all(dim=1, keepdim=True)
+
+    results = flash_mla.flash_mla_interface.flash_mla_sparse_fwd(
+        q, kv, indices, sm_scale, d_v, indices_all_valid_per_q
+    )
+    # \------------------------- Metax Modification -------------------------/
+    return results
 
 
 #

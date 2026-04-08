@@ -1,16 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 # 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Custom Sparse Attention Indexer layers."""
 
 import torch
 
 from vllm.forward_context import get_forward_context
 from vllm.logger import init_logger
-from vllm.model_executor.custom_op import CustomOp
 from vllm.platforms import current_platform
 from vllm_metax.utils.deep_gemm import (
-    is_deep_gemm_supported,
     bf16_mqa_logits,
     bf16_paged_mqa_logits,
 )
@@ -26,7 +23,7 @@ from vllm_metax import _custom_ops as mx_ops
 logger = init_logger(__name__)
 
 
-def sparse_attn_indexer(
+def sparse_attn_indexer_bf16(
     hidden_states: torch.Tensor,
     k_cache_prefix: str,
     kv_cache: torch.Tensor,
@@ -59,7 +56,7 @@ def sparse_attn_indexer(
             ((total_seq_lens, head_dim), torch.bfloat16),
             # ((total_seq_lens, 4), torch.uint8),
         )
-        return sparse_attn_indexer_fake(
+        return sparse_attn_indexer_bf16_fake(
             hidden_states,
             k_cache_prefix,
             kv_cache,
@@ -108,7 +105,7 @@ def sparse_attn_indexer(
         k_bf16_full = workspace_manager.get_simultaneous(
             ((total_seq_lens, head_dim), torch.bfloat16),
             # ((total_seq_lens, 4), torch.uint8),
-        )
+        )[0]
         for chunk in prefill_metadata.chunks:
             k_bf16 = k_bf16_full[: chunk.total_seq_lens]
 
@@ -233,7 +230,7 @@ def sparse_attn_indexer(
     return topk_indices_buffer
 
 
-def sparse_attn_indexer_fake(
+def sparse_attn_indexer_bf16_fake(
     hidden_states: torch.Tensor,
     k_cache_prefix: str,
     kv_cache: torch.Tensor,
@@ -252,74 +249,9 @@ def sparse_attn_indexer_fake(
 
 
 direct_register_custom_op(
-    op_name="mx_sparse_attn_indexer",
-    op_func=sparse_attn_indexer,
+    op_name="mx_sparse_attn_indexer_bf16",
+    op_func=sparse_attn_indexer_bf16,
     mutates_args=["topk_indices_buffer"],
-    fake_impl=sparse_attn_indexer_fake,
+    fake_impl=sparse_attn_indexer_bf16_fake,
     dispatch_key=current_platform.dispatch_key,
 )
-
-
-@CustomOp.register_oot(name="sparse_attn_indexer")
-class SparseAttnIndexer(CustomOp):
-    """Sparse Attention Indexer Custom Op Layer. This layer is extracted as a
-    separate custom op since it involves heavy custom kernels like `mqa_logits`,
-    `paged_mqa_logits` and `top_k_per_row`, etc. Those kernels maybe requires
-    specific memory layout or implementation for different hardware backends to
-    achieve optimal performance.
-
-    For now, the default native path will use CUDA backend path. Other platform
-    may requires add the corresponding Custom Op name `sparse_attn_indexer` to
-    `custom_ops` in `CompilationConfig` to enable the platform specific path.
-    """
-
-    def __init__(
-        self,
-        k_cache,
-        quant_block_size: int,
-        scale_fmt: str,
-        topk_tokens: int,
-        head_dim: int,
-        max_model_len: int,
-        max_total_seq_len: int,
-        topk_indices_buffer: torch.Tensor,
-    ):
-        super().__init__()
-        self.k_cache = k_cache
-        self.quant_block_size = quant_block_size
-        self.scale_fmt = scale_fmt
-        self.topk_tokens = topk_tokens
-        self.head_dim = head_dim
-        self.max_model_len = max_model_len
-        self.max_total_seq_len = max_total_seq_len
-        self.topk_indices_buffer = topk_indices_buffer
-        if current_platform.is_cuda() and not is_deep_gemm_supported():
-            logger.warning_once(
-                "DeepGEMM is not supported or available. SparseAttnIndexer will use a "
-                "less efficient PyTorch implementation. "
-                "Please make sure you have the required hardware and software setup "
-                "for DeepGEMM to achieve optimal performance."
-            )
-
-    def forward_oot(
-        self,
-        hidden_states: torch.Tensor,
-        q_fp8: torch.Tensor,
-        k: torch.Tensor,
-        weights: torch.Tensor,
-    ):
-        return torch.ops.vllm.mx_sparse_attn_indexer(
-            hidden_states,
-            self.k_cache.prefix,
-            self.k_cache.kv_cache[0],
-            q_fp8,
-            k,
-            weights,
-            self.quant_block_size,
-            self.scale_fmt,
-            self.topk_tokens,
-            self.head_dim,
-            self.max_model_len,
-            self.max_total_seq_len,
-            self.topk_indices_buffer,
-        )
