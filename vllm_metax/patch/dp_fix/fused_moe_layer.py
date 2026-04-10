@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
+
+
 # ------------------------------------------------------------------------
-# Note: This file is a patch to opt dp all2all
+# Note: This file is a patch to optimized dp all2all
 # ------------------------------------------------------------------------
 import torch
-import vllm.envs as envs
 from vllm_metax import envs as mx_envs
 
 from vllm.distributed import tensor_model_parallel_all_reduce
@@ -18,10 +19,12 @@ from vllm.model_executor.layers.fused_moe.runner.default_moe_runner import (
 def use_combine_allreduce(self):
     return (
         self.moe_config.moe_parallel_config.dp_size > 1
-        and mx_envs.MACA_DP_OPT
+        and not self.moe_config.is_sequence_parallel
+        and mx_envs.VLLM_METAX_OPTIMIZED_DP_ALL2ALL
         and (
-            envs.VLLM_ALL2ALL_BACKEND == "naive"
-            or envs.VLLM_ALL2ALL_BACKEND == "allgather_reducescatter"
+            self.moe_config.moe_parallel_config.all2all_backend == "naive"
+            or self.moe_config.moe_parallel_config.all2all_backend
+            == "allgather_reducescatter"
         )
     )
 
