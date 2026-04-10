@@ -52,6 +52,7 @@ def _get_backend_priorities(
     use_mla: bool,
     device_capability: DeviceCapability,
     num_heads: int | None = None,
+    kv_cache_dtype: CacheDType | None = None,
 ) -> list[AttentionBackendEnum]:
     """Get backend priorities with lazy import to avoid circular dependency."""
     from vllm.v1.attention.backends.registry import AttentionBackendEnum
@@ -229,7 +230,6 @@ class MacaPlatformBase(Platform):
         parallel_config = vllm_config.parallel_config
         compilation_config = vllm_config.compilation_config
         model_config = vllm_config.model_config
-        cache_config = vllm_config.cache_config
 
         if parallel_config.worker_cls == "auto":
             parallel_config.worker_cls = "vllm.v1.worker.gpu_worker.Worker"
@@ -569,6 +569,10 @@ class MacaPlatformBase(Platform):
         return True
 
     @classmethod
+    def support_deep_gemm(cls) -> bool:
+        return True
+
+    @classmethod
     def num_compute_units(cls, device_id=0) -> int:
         return torch.cuda.get_device_properties(device_id).multi_processor_count
 
@@ -584,7 +588,6 @@ class MacaPlatformBase(Platform):
         if parser is not None:
             parser.set_defaults(async_scheduling=False)
         register_attention_backends()
-        # TODO(m01016): update cudagraph max capture size here
 
 
 # NVML utils
@@ -694,7 +697,7 @@ class NonMxsmlMacaPlatform(MacaPlatformBase):
 
     @classmethod
     def get_device_name(cls, device_id: int = 0) -> str:
-        return "Device 4000"
+        return torch.cuda.get_device_name(device_id)
 
     @classmethod
     def get_device_total_memory(cls, device_id: int = 0) -> int:
