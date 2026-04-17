@@ -64,16 +64,13 @@ def _lazy_init() -> None:
 
 
 def get_num_blocks_paged_mqa_logits_metadata(num_sms: int) -> int:
-    """Build scheduling metadata for paged MQA logits.
+    """Get scheduling metadata buffer size for paged MQA logits.
 
     Args:
-        context_lens: Tensor of shape [B], dtype int32; effective context length
-            per batch element.
-        block_size: KV-cache block size in tokens (e.g., 64).
-        num_sms: Number of SMs available. 132 for Hopper
+        num_sms: Number of SMs available.
 
     Returns:
-        Backend-specific tensor consumed by `fp8_paged_mqa_logits` to
+        Backend-specific tensor shape[0] consumed by `bf16_paged_mqa_logits` to
         schedule work across SMs.
     """
     _lazy_init()
