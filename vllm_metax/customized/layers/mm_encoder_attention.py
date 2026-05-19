@@ -2,6 +2,7 @@
 # 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
 from vllm.model_executor.layers.attention.mm_encoder_attention import (
     MMEncoderAttention as vllm_MMEncoderAttention,
+    _get_flashinfer_workspace_buffer,
 )
 import torch
 from vllm_metax.v1.attention.ops.vit_attn_wrappers import (
@@ -48,6 +49,7 @@ class MMEncoderAttention(vllm_MMEncoderAttention):
         # During model initialization, the default dtype is set as the model
         # weight and activation dtype.
         dtype = torch.get_default_dtype()
+        self.dtype = dtype
 
         # Get device-specific vision attention backend.
         self.attn_backend = get_vit_attn_backend(
@@ -68,6 +70,12 @@ class MMEncoderAttention(vllm_MMEncoderAttention):
             else None
         )
 
+        if self.attn_backend == AttentionBackendEnum.FLASHINFER:
+            _get_flashinfer_workspace_buffer()
+
+        logger.info_once(f"Using {self.attn_backend} for MMEncoderAttention.")
+
+        self._init_fp8_state()
         logger.info_once(
             f"Using {self.attn_backend} for MacaMMEncoderAttention.", scope="local"
         )

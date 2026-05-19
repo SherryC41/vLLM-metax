@@ -21,6 +21,7 @@ from vllm_metax.v1.attention.backends.mla.indexer import (
 )
 from vllm.v1.attention.ops.common import pack_seq_triton, unpack_seq_triton
 from vllm.v1.worker.workspace import current_workspace_manager
+from vllm.model_executor.layers.sparse_attn_indexer import kv_cache_as_quant_view
 
 import vllm.envs as envs
 
@@ -30,8 +31,18 @@ logger = init_logger(__name__)
 
 RADIX_TOPK_WORKSPACE_SIZE = 1024 * 1024
 
-# MXFP4 layout: 2 values packed per byte, ue8m0 (1-byte) scale per block of 32.
-MXFP4_BLOCK_SIZE = 32
+
+def _gather_workspace_shapes_int8(
+    total_seq_lens: int,
+    head_dim: int,
+    int8_dtype: torch.dtype,
+) -> tuple[tuple[tuple[int, int], torch.dtype], tuple[tuple[int, int], torch.dtype]]:
+    """Return ((values_shape, values_dtype), (scales_shape, scales_dtype)) for
+    the K-gather workspace."""
+    return (
+        ((total_seq_lens, head_dim), int8_dtype),
+        ((total_seq_lens, 4), torch.float32),
+    )
 
 
 def sparse_attn_indexer_int8(
@@ -62,11 +73,13 @@ def sparse_attn_indexer_int8(
     # assert isinstance(attn_metadata, dict)
     if not isinstance(attn_metadata, dict):
         # Reserve workspace for indexer during profiling run
-
-        # Reserve workspace for indexer during profiling run
+        values_spec, scales_spec = _gather_workspace_shapes_int8(
+            total_seq_lens, head_dim, torch.int8
+        )
         current_workspace_manager().get_simultaneous(
-            ((total_seq_lens, head_dim), torch.int8),
-            ((total_seq_lens, 4), torch.float32),
+            values_spec,
+            scales_spec,
+            ((RADIX_TOPK_WORKSPACE_SIZE,), torch.uint8),
         )
 
         # Dummy allocation to simulate for peak logits tensor memory during inference.
@@ -126,9 +139,12 @@ def sparse_attn_indexer_int8(
         # MXFP4 (head_dim/2 bytes packed + head_dim/MXFP4_BLOCK_SIZE ue8m0
         # scales) based on use_fp4_cache.
         workspace_manager = current_workspace_manager()
+        values_spec, scales_spec = _gather_workspace_shapes_int8(
+            total_seq_lens, head_dim, torch.int8
+        )
         k_quant_full, k_scale_full = workspace_manager.get_simultaneous(
-            ((total_seq_lens, head_dim), torch.int8),
-            ((total_seq_lens, 4), torch.float32),
+            values_spec,
+            scales_spec,
         )
         for chunk in prefill_metadata.chunks:
             k_quant = k_quant_full[: chunk.total_seq_lens]
@@ -144,13 +160,9 @@ def sparse_attn_indexer_int8(
                 )
 
             q_slice = q_quant[chunk.token_start : chunk.token_end]
-            q_scale_slice = None  # noqa: F841
-            # DeepGEMM scalar-type tags (zero-copy): MXFP4 values → int8
-            # (kPackedFP4), scales → int32 squeezed to 1-D kv_sf / 2-D q_sf.
             q_slice_cast = q_slice
             k_quant_cast = k_quant
             k_scale_cast = k_scale.view(torch.float32).squeeze(-1)
-
             logits = int8_mqa_logits(
                 q_slice_cast,
                 (k_quant_cast, k_scale_cast),
@@ -179,7 +191,7 @@ def sparse_attn_indexer_int8(
     if has_decode:
         decode_metadata = attn_metadata_narrowed.decode
         assert decode_metadata is not None
-        kv_cache = kv_cache.unsqueeze(-2)
+        kv_cache = kv_cache_as_quant_view(kv_cache, head_dim, False)
         decode_lens = decode_metadata.decode_lens
         if decode_metadata.requires_padding:
             # pad in edge case where we have short chunked prefill length <

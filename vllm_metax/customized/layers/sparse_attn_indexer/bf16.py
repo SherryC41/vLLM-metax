@@ -22,6 +22,7 @@ from vllm_metax.v1.attention.backends.mla.indexer import (
 )
 from vllm.v1.attention.ops.common import pack_seq_triton, unpack_seq_triton
 from vllm.v1.worker.workspace import current_workspace_manager
+from vllm.model_executor.layers.sparse_attn_indexer import kv_cache_as_quant_view
 
 from vllm_metax import _custom_ops as mx_ops
 
@@ -38,14 +39,6 @@ def _gather_workspace_shapes_bf16(
     """Return ((values_shape, values_dtype) for
     the K-gather workspace."""
     return (((total_seq_lens, head_dim), bf16_dtype),)
-
-
-def kv_cache_as_quant_view(
-    kv_cache: torch.Tensor,
-    head_dim: int,
-    use_fp4_cache: bool,
-) -> torch.Tensor:
-    return kv_cache.unsqueeze(-2)
 
 
 def sparse_attn_indexer_bf16(
@@ -66,7 +59,6 @@ def sparse_attn_indexer_bf16(
     skip_k_cache_insert: bool,
     use_fp4_cache: bool = False,
 ) -> torch.Tensor:
-    assert q_scale is None, "q_scale is not needed for bf16 indexer"
     # careful! this will be None in dummy run
     attn_metadata = get_forward_context().attn_metadata
     k_cache_prefix = _resolve_layer_name(k_cache_prefix)
@@ -117,6 +109,7 @@ def sparse_attn_indexer_bf16(
     has_prefill = attn_metadata_narrowed.num_prefills > 0
     num_decode_tokens = attn_metadata_narrowed.num_decode_tokens
 
+    assert q_scale is None, "q_scale is not needed for bf16 indexer"
     # During speculative decoding, k may be padded to the CUDA graph batch
     # size while slot_mapping only covers actual tokens. Truncate k to avoid
     # out-of-bounds reads in the kernel.
@@ -229,12 +222,7 @@ def sparse_attn_indexer_bf16(
         num_rows = logits.shape[0]
         topk_indices = topk_indices_buffer[:num_padded_tokens, :topk_tokens]
 
-        allowed_topk = (
-            (512, 1024, 2048)
-            if current_platform.is_device_capability_family(100)
-            else (512, 2048)
-        )
-        if current_platform.is_cuda_alike() and topk_tokens in allowed_topk:
+        if current_platform.is_cuda_alike() and topk_tokens in (512, 1024, 2048):
             workspace_manager = current_workspace_manager()
             (topk_workspace,) = workspace_manager.get_simultaneous(
                 ((RADIX_TOPK_WORKSPACE_SIZE,), torch.uint8),

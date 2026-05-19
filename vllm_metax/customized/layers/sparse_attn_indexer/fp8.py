@@ -24,6 +24,7 @@ from vllm_metax.v1.attention.backends.mla.indexer import (
 )
 from vllm.v1.attention.ops.common import pack_seq_triton, unpack_seq_triton
 from vllm.v1.worker.workspace import current_workspace_manager
+from vllm.model_executor.layers.sparse_attn_indexer import kv_cache_as_quant_view
 
 from vllm_metax import _custom_ops as mx_ops
 
@@ -54,26 +55,6 @@ def _gather_workspace_shapes(
         ((total_seq_lens, head_dim), fp8_dtype),
         ((total_seq_lens, 4), torch.uint8),
     )
-
-
-def kv_cache_as_quant_view(
-    kv_cache: torch.Tensor,
-    head_dim: int,
-    use_fp4_cache: bool,
-) -> torch.Tensor:
-    """4D ``[num_blocks, block_size, 1, head_width]`` view expected by
-    DeepGEMM, from the 3D indexer kv-cache allocation."""
-    if use_fp4_cache:
-        assert kv_cache.ndim == 3 and kv_cache.dtype == torch.uint8
-        num_blocks, block_size, _ = kv_cache.shape
-        page_bytes = int(kv_cache.stride(0))
-        fp4_bytes = head_dim // 2 + head_dim // MXFP4_BLOCK_SIZE
-        return torch.as_strided(
-            kv_cache,
-            size=(num_blocks, block_size, 1, fp4_bytes),
-            stride=(page_bytes, fp4_bytes, fp4_bytes, 1),
-        )
-    return kv_cache.unsqueeze(-2)
 
 
 def sparse_attn_indexer(
