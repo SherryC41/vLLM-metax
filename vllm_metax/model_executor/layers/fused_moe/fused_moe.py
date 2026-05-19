@@ -2579,7 +2579,7 @@ class TritonExperts(LoRAExpertsMixin, mk.FusedMoEExpertsModular):
         elif (
             hidden_states.dtype == torch.float8_e4m3fn
             or hidden_states.dtype == torch.float8_e4m3fnuz
-        ):
+        ) or hidden_states.dtype == torch.int8:
             compute_type = tl.bfloat16
         else:
             raise ValueError(f"Unsupported compute_type: {hidden_states.dtype}")
