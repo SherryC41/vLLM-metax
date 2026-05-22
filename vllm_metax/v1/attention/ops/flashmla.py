@@ -3,6 +3,8 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 # adapted from: https://github.com/deepseek-ai/FlashMLA/blob/main/flash_mla/flash_mla_interface.py
 
+from dataclasses import dataclass
+
 import torch
 
 from vllm.logger import init_logger
@@ -58,9 +60,10 @@ if _is_flashmla_available()[0]:
             get_mla_metadata,
         )
 
+        @dataclass
         class FlashMLASchedMeta:  # type: ignore[no-redef]
-            scheduler_metadata: torch.Tensor | None
-            num_splits: torch.Tensor
+            scheduler_metadata: torch.Tensor | None = None
+            num_splits: torch.Tensor | None = None
 else:
 
     class FlashMLASchedMeta:  # type: ignore[no-redef]
@@ -104,9 +107,6 @@ def flash_mla_sparse_fwd(
     indices: torch.Tensor,
     sm_scale: float,
     d_v: int = 512,
-    attn_sink: torch.Tensor | None = None,
-    topk_length: torch.Tensor | None = None,
-    out: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Sparse attention prefill kernel
@@ -129,22 +129,13 @@ def flash_mla_sparse_fwd(
     """
     # TODO: MetaX flash_mla support
     # /------------------------  Metax Modification -------------------------\
-    # s_kv = kv.shape[0]
-    # indices_valid = torch.logical_and(indices != -1, indices < s_kv)
-    # # [s_q, h_kv, topk] -> [s_q, h_kv] -> [s_q, 1]
-    # indices_all_valid_per_q = indices_valid.all(dim=2).all(dim=1, keepdim=True)
-    indices_all_valid_per_q = None  # unnecessary
+    s_kv = kv.shape[0]
+    indices_valid = torch.logical_and(indices != -1, indices < s_kv)
+    # [s_q, h_kv, topk] -> [s_q, h_kv] -> [s_q, 1]
+    indices_all_valid_per_q = indices_valid.all(dim=2).all(dim=1, keepdim=True)
 
     results = flash_mla.flash_mla_interface.flash_mla_sparse_fwd(
-        q,
-        kv,
-        indices,
-        sm_scale,
-        d_v,
-        indices_all_valid_per_q,
-        attn_sink,
-        topk_length,
-        out,
+        q, kv, indices, sm_scale, d_v, indices_all_valid_per_q
     )
     # \------------------------- Metax Modification -------------------------/
     return results
