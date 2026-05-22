@@ -205,7 +205,7 @@ def rejection_greedy_sample_kernel(
     # re-compilation may happen during runtime when is_greedy_ptr is None.
     # /------------------------  Metax Modification -------------------------\
     is_greedy = 1 if is_greedy_ptr is None else tl.load(is_greedy_ptr + req_idx)
-    if is_greedy == -1:
+    if is_greedy == 0:
         # Early exit for non-greedy sampling requests.
         return
     # \------------------------- Metax Modification -------------------------/
