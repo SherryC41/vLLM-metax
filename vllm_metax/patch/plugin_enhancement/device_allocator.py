@@ -65,15 +65,8 @@ def wake_up(self, tags: list[str] | None = None) -> None:
                 buffer.data.copy_(self._sleep_saved_buffers[name].data)
         self._sleep_saved_buffers = {}
 
-    # If the KV cache has just been woken up,
-    # the internal state of cache_engine must be reset,
-    # especially the FP8 scaling factor.
-    if (
-        (tags is None or "kv_cache" in tags)
-        and is_quantized_kv_cache(self.cache_config.cache_dtype)
-        and hasattr(self.model_runner, "init_fp8_kv_scales")
-    ):
-        self.model_runner.init_fp8_kv_scales()
+    if tags is None or "kv_cache" in tags:
+        self.model_runner.post_kv_cache_wake_up()
 
 
 def _maybe_get_memory_pool_context(self, tag: str) -> AbstractContextManager:

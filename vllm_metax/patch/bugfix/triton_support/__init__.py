@@ -7,3 +7,4 @@ from . import rejection_sampler
 from . import eagle
 from . import topk_topp_sampler
 from . import mrv2
+from . import jit_monitor

@@ -7,7 +7,7 @@ import torch
 
 from vllm import envs as envs
 from vllm._aiter_ops import rocm_aiter_ops
-from vllm.model_executor.layers.fused_moe.rocm_aiter_fused_moe import (
+from vllm.model_executor.layers.fused_moe.experts.rocm_aiter_moe import (
     rocm_aiter_grouped_topk,
 )
 from vllm.model_executor.layers.fused_moe.router.fused_topk_bias_router import (
@@ -22,6 +22,16 @@ from vllm.model_executor.layers.fused_moe.router.grouped_topk_router import (
 )
 from vllm_metax import _custom_ops as mx_ops
 from vllm_metax import envs as mx_envs
+
+# --------------------------------
+# Note:
+# Intent
+# - Add scoring-aware dispatch at `scoring_func` for MetaX grouped-topk.
+# - Apply differentiated fast-path routing for DeepSeek/Kimi-compatible shapes.
+# - Keep upstream ROCm-AITER behavior, while redirecting other paths to MetaX.
+#
+# Goal
+# - Improve grouped-topk routing efficiency without changing routing semantics.
 
 
 def maca_fused_grouped_topk(

@@ -17,7 +17,7 @@ maybe we need `direct_register_custom_op` for another lora_shrink:
     lora_shrink = torch.ops.vllm.maca_lora_shrink
 """
 
-from vllm_metax.patch.triton_support.lora.kernel_utils import (
+from vllm_metax.patch.bugfix.triton_support.lora.kernel_utils import (
     do_shrink_kernel as mx_do_shrink_kernel,
 )
 from vllm.triton_utils import tl, triton

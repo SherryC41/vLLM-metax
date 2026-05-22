@@ -6,6 +6,18 @@ import numpy as np
 
 from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 from vllm.v1.attention.backends.utils import reorder_batch_to_split_decodes_and_prefills
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from vllm.v1.core.sched.output import SchedulerOutput
+
+# ---------------------------------
+# Note:
+# _metax_reorder_batch_to_split_decodes_and_prefills provides MetaX-specific
+# batch reordering for speculative decode. Compared to the upstream
+# reorder_batch_to_split_decodes_and_prefills, this patch enables explicit
+# decode/extend/prefill separation and sorts decode requests by scheduled token
+# count, optimizing FlashAttention query length bucketing
 
 
 def _metax_reorder_batch_to_split_decodes_and_prefills(

@@ -2,29 +2,6 @@
 # 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-# -------------------------------------------------------
-# Note: This patch is for compatibility on Metax platform,
-#       replaced some libraries' interface with maca's
-# -------------------------------------------------------
-
-r"""Benchmark online serving throughput.
-
-On the server side, run one of the following commands
-to launch the vLLM OpenAI API server:
-    vllm serve <your_model> <engine arguments>
-
-On the client side, run:
-    vllm bench serve \
-        --backend <backend or endpoint type. Default 'openai'> \
-        --label <benchmark result label. Default using backend> \
-        --model <your_model. Optional, defaults to first model from server> \
-        --dataset-name <dataset_name. Default 'random'> \
-        --input-len <general input length. Optional, maps to dataset-specific args> \
-        --output-len <general output length. Optional, maps to dataset-specific args> \
-        --request-rate <request_rate. Default inf> \
-        --num-prompts <num_prompts. Default 1000>
-"""
-
 import argparse
 import json
 import uuid
@@ -36,8 +13,11 @@ from vllm.benchmarks.lib.endpoint_request_func import (
 )
 
 
-# -----------------------
-# Diff from vllm.benchmarks.serve.add_cli_args
+# ------------------------------------------------------
+# Note: set sampling_group's default temperature to 0.0.
+# Which makes the output more deterministic and reduce latency variance,
+
+
 def add_cli_args(parser: argparse.ArgumentParser):
     add_dataset_parser(parser)
     parser.add_argument(
