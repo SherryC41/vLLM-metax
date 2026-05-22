@@ -11,7 +11,7 @@ from collections.abc import Callable
 from datetime import timedelta
 from functools import cache, wraps
 from pathlib import Path
-from typing import TYPE_CHECKING, TypeVar, Optional
+from typing import TYPE_CHECKING, TypeVar
 
 import torch
 from torch.distributed import PrefixStore, ProcessGroup
@@ -23,6 +23,7 @@ import vllm.envs as envs
 from vllm.logger import logger
 
 from vllm.v1.attention.backends.registry import AttentionBackendEnum, register_backend
+from vllm.v1.attention.backends.mla.prefill.registry import MLAPrefillBackendEnum
 from vllm_metax.utils import import_pymxsml
 
 
@@ -73,12 +74,15 @@ def _get_backend_priorities(
             AttentionBackendEnum.FLASH_ATTN,
             AttentionBackendEnum.FLASHINFER,
             AttentionBackendEnum.TRITON_ATTN,
-            AttentionBackendEnum.TREE_ATTN,
             AttentionBackendEnum.FLEX_ATTENTION,
         ]
 
 
 def register_attention_backends() -> None:
+    from vllm_metax.patch.plugin_enhancement.prefill_backend_registry import (
+        register_mla_prefill_backend,
+    )
+
     # Pre-register all attention backends
     register_backend(
         AttentionBackendEnum.FLASHMLA,
@@ -105,12 +109,12 @@ def register_attention_backends() -> None:
         class_path="vllm_metax.v1.attention.backends.triton_attn.MacaTritonAttentionBackend",
     )
     register_backend(
-        backend=AttentionBackendEnum.TREE_ATTN,
-        class_path="vllm_metax.v1.attention.backends.tree_attn.MacaTreeAttentionBackend",
-    )
-    register_backend(
         backend=AttentionBackendEnum.FLEX_ATTENTION,
         class_path="vllm_metax.v1.attention.backends.flex_attention.MacaFlexAttentionBackend",
+    )
+    register_mla_prefill_backend(
+        backend=MLAPrefillBackendEnum.FLASH_ATTN,
+        class_path="vllm_metax.v1.attention.backends.mla.prefill.flash_attn.MacaFlashAttnPrefillBackend",
     )
 
 
@@ -467,7 +471,7 @@ class MacaPlatformBase(Platform):
         cls,
         head_size: int,
         dtype: torch.dtype,
-        backend: Optional["AttentionBackendEnum"] = None,
+        backend: "AttentionBackendEnum | None",
     ) -> "AttentionBackendEnum":
         register_attention_backends()
 
