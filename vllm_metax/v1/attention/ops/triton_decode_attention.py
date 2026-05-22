@@ -467,26 +467,32 @@ def _decode_grouped_att_m_fwd(
 ):
     # with is_mla there is only a single c_kv in smem.
     # could increase BLOCK or num_stages.
-    BLOCK = 32
     Lk = k_buffer.shape[-1]
     Lv = v_buffer.shape[-1]
+
+    # Align tile dimensions with latent rank for MLA to avoid shape mismatch.
+    if is_mla:
+        if not is_maca_ and Lk == 576:
+            BLOCK_DMODEL = 512
+            BLOCK_DPE = 64
+        elif not is_maca_ and Lk == 288:
+            BLOCK_DMODEL = 256
+            BLOCK_DPE = 32
+        else:
+            BLOCK_DMODEL = triton.next_power_of_2(Lv)
+            BLOCK_DPE = triton.next_power_of_2(Lk - Lv) if Lk > Lv else 0
+    else:
+        BLOCK_DMODEL = triton.next_power_of_2(Lk)
+        BLOCK_DPE = 0
+    BLOCK_DV = triton.next_power_of_2(Lv)
+
+    BLOCK = 32
 
     # [TODO] work around shmem limit on MI3xx
     # /------------------------- Metax Modification -------------------------\
     if is_maca_:
         BLOCK = 16
     # \------------------------- Metax Modification -------------------------/
-
-    if Lk == 576:
-        BLOCK_DMODEL = 512
-        BLOCK_DPE = 64
-    elif Lk == 288:
-        BLOCK_DMODEL = 256
-        BLOCK_DPE = 32
-    else:
-        BLOCK_DMODEL = triton.next_power_of_2(Lk)
-        BLOCK_DPE = 0
-    BLOCK_DV = triton.next_power_of_2(Lv)
 
     batch, head_num = q.shape[0], q.shape[1]
     kv_group_num = q.shape[1] // k_buffer.shape[-2]
@@ -561,6 +567,7 @@ def _fwd_kernel_stage2(
     NUM_KV_SPLITS: tl.constexpr,
     BLOCK_DV: tl.constexpr,
     Lv: tl.constexpr,
+    OUTPUT_FP16: tl.constexpr = 0,
 ):
     cur_batch = tl.program_id(0)
     cur_head = tl.program_id(1)
@@ -597,9 +604,12 @@ def _fwd_kernel_stage2(
             e_sum = e_sum * old_scale + exp_logic
             e_max = n_e_max
 
+    result = acc / e_sum
+    if OUTPUT_FP16:
+        result = result.to(tl.float16)
     tl.store(
         o + cur_batch * stride_obs + cur_head * stride_oh + offs_d,
-        acc / e_sum,
+        result,
         mask=mask_d,
     )
     lse_val = e_max + tl.log(e_sum)

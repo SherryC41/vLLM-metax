@@ -18,7 +18,7 @@ from vllm.model_executor.layers.quantization.utils.quant_utils import (
 from vllm.platforms import current_platform
 from vllm.platforms.interface import DeviceCapability
 from vllm.utils.math_utils import next_power_of_2
-from vllm.utils.torch_utils import is_quantized_kv_cache
+from vllm.utils.torch_utils import async_tensor_h2d, is_quantized_kv_cache
 from vllm.v1.attention.backend import (
     AttentionBackend,
     AttentionCGSupport,
@@ -114,14 +114,15 @@ class TritonAttentionMetadata:
         # Build on CPU first then move to GPU in a single H2D transfer
         max_ranges = max(len(r) for r in range_lists)
         # Pad all sequences to the same number of ranges
-        padded = []
+        padded_ranges: list[list[tuple[int, int]]] = []
         for r in range_lists:
             padded_r = list(r) + [(0, 0)] * (max_ranges - len(r))
-            padded.append(padded_r)
-        # Create tensor with efficient H2D transfer
-        return torch.tensor(padded, dtype=torch.int32, device=device).view(
-            num_seqs, max_ranges, 2
+            padded_ranges.append(padded_r)
+        # Build on pinned CPU memory so the H2D transfer is non-blocking.
+        padded_tensor = async_tensor_h2d(
+            padded_ranges, dtype=torch.int32, device=device
         )
+        return padded_tensor.view(num_seqs, max_ranges, 2)
 
 
 class TritonAttentionMetadataBuilder(AttentionMetadataBuilder[TritonAttentionMetadata]):

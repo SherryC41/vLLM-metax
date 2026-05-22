@@ -252,25 +252,15 @@ def torch_flash_mla_sparse_prefill(
 # Metax: bf16 decode
 def flash_mla_sparse_decode(
     q: torch.Tensor,
-    k_cache: torch.Tensor,
+    kv_c_and_k_pe_cache: torch.Tensor,
+    block_table: torch.Tensor,
+    cache_seqlens: torch.Tensor,
     head_dim_v: int,
-    tile_scheduler_metadata: FlashMLASchedMeta,
-    block_table: torch.Tensor | None = None,
-    cache_seqlens: torch.Tensor | None = None,
-    num_splits: None = None,
+    tile_scheduler_metadata: torch.Tensor,
+    num_splits: torch.Tensor,
     softmax_scale: float | None = None,
     causal: bool = False,
-    is_fp8_kvcache: bool = False,
     indices: torch.Tensor | None = None,
-    attn_sink: torch.Tensor | None = None,
-    extra_k_cache: torch.Tensor | None = None,
-    extra_indices_in_kvcache: torch.Tensor | None = None,
-    topk_length: torch.Tensor | None = None,
-    extra_topk_length: torch.Tensor | None = None,
-    descale_q: torch.Tensor | None = None,
-    descale_k: torch.Tensor | None = None,
-    indices_all_valid_per_q: torch.Tensor | None = None,
-    out: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Arguments:
@@ -298,33 +288,24 @@ def flash_mla_sparse_decode(
     - out: (batch_size, seq_len_q, num_heads_q, head_dim_v).
     - softmax_lse: (batch_size, num_heads_q, seq_len_q), torch.float32.
     """
-    # s_kv = k_cache.shape[0] * k_cache.shape[1]
-    # assert indices is not None
-    # indices_valid = torch.logical_and(indices != -1, indices < s_kv)
-    # # [s_q, h_kv, topk] -> [s_q, h_kv, 1]
-    # indices_all_valid_per_q = indices_valid.all(dim=-1, keepdim=True)
-
+    s_kv = kv_c_and_k_pe_cache.shape[0] * kv_c_and_k_pe_cache.shape[1]
+    assert indices is not None
+    indices_valid = torch.logical_and(indices != -1, indices < s_kv)
+    # [s_q, h_kv, topk] -> [s_q, h_kv, 1]
+    indices_all_valid_per_q = indices_valid.all(dim=-1, keepdim=True)
     return flash_mla_with_kvcache(
-        q=q,
-        k_cache=k_cache,
-        block_table=block_table,
-        cache_seqlens=cache_seqlens,
-        head_dim_v=head_dim_v,
-        tile_scheduler_metadata=tile_scheduler_metadata,
-        num_splits=num_splits,
-        softmax_scale=softmax_scale,
-        causal=causal,
-        is_fp8_kvcache=is_fp8_kvcache,
-        indices=indices,
-        attn_sink=attn_sink,
-        extra_k_cache=extra_k_cache,
-        extra_indices_in_kvcache=extra_indices_in_kvcache,
-        topk_length=topk_length,
-        extra_topk_length=extra_topk_length,
-        descale_q=descale_q,
-        descale_k=descale_k,
-        indices_all_valid_per_q=None,  # unnecessary
-        out=out,
+        q,
+        kv_c_and_k_pe_cache,
+        block_table,
+        cache_seqlens,
+        head_dim_v,
+        tile_scheduler_metadata,
+        num_splits,
+        softmax_scale,
+        causal,
+        False,
+        indices,
+        indices_all_valid_per_q,
     )
 
 
