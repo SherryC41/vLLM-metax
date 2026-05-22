@@ -35,10 +35,10 @@ def _gather_workspace_shapes_bf16(
     total_seq_lens: int,
     head_dim: int,
     bf16_dtype: torch.dtype,
-) -> tuple[tuple[tuple[int, int], torch.dtype]]:
-    """Return ((values_shape, values_dtype) for
+) -> tuple[tuple[int, int], torch.dtype]:
+    """Return (values_shape, values_dtype) for
     the K-gather workspace."""
-    return (((total_seq_lens, head_dim), bf16_dtype),)
+    return ((total_seq_lens, head_dim), bf16_dtype)
 
 
 def sparse_attn_indexer_bf16(
