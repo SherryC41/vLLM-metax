@@ -1,14 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
 
-# -------------------------------------------------------------
-# Note: this file is used to patch the topk_topp_sampler
-#       to use pytorch instead of triton.
+# -----------------------------------------------
+# Note: Fall back to PyTorch top-k/top-p sampling to avoid Triton issues.
 #
-# !!! Remove this file once the
-#       `apply_top_k_top_p_triton`
-#     implementation is fixed.
-# -------------------------------------------------------------
+# Affected versions: v0.21.0
+# Remove at: after `apply_top_k_top_p_triton` is fixed upstream.
+# -----------------------------------------------
 
 import torch
 from vllm.v1.sample.ops.topk_topp_sampler import apply_top_k_top_p_pytorch

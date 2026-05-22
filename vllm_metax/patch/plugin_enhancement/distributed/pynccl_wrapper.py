@@ -1,6 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# -----------------------------------------------
+# Note: Provide a pyNCCL-compatible MCCL wrapper for MetaX distributed
+#       communication.
+#
+# Affected versions: v0.21.0
+# -----------------------------------------------
 
 # This file is a pure Python wrapper for the NCCL library.
 # The main purpose is to use NCCL combined with CUDA graph.
@@ -22,13 +28,6 @@
 # more flexible. We can easily switch between different versions of NCCL by
 # changing the environment variable `VLLM_NCCL_SO_PATH`, or the `so_file`
 # variable in the code.
-
-
-# -------------------------------------------------------
-# Note: This patch is for compatibility on Metax platform,
-#       replaced some libraries' interface with maca's
-# -------------------------------------------------------
-
 import ctypes
 import platform
 from typing import Any

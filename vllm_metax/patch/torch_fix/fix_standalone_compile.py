@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
 
-# -----------------------------------------------------
-# Note: This is a hotfix for torch2.8+metax to make the
-#       standalone compilation backend work.
+# -----------------------------------------------
+# Note: Hotfix the standalone compilation backend for torch2.8+metax.
 #
-# TODO(hank): Remove this once the torch issue is resolved.
-# _____________________________________________________
+# Affected versions: v0.21.0
+# Remove at: after the underlying torch issue is resolved.
+# -----------------------------------------------
 
 import torch
 import copy

@@ -1,13 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
 
-# ------------------------------------------------------------------------
-# Note: This file is a patch for vLLM to support `MACA_VISIBLE_DEVICES`.
-#       It modifies the behavior of environment variable handling to include
-#       `MACA_VISIBLE_DEVICES` in addition to the standard `CUDA_VISIBLE_DEVICES`.
+# -----------------------------------------------
+# Note: Add `MACA_VISIBLE_DEVICES` handling alongside `CUDA_VISIBLE_DEVICES`.
 #
-# This is specifically tailored for the Metax platform.
-# ------------------------------------------------------------------------
+# Affected versions: v0.21.0
+# -----------------------------------------------
 
 from vllm.v1.worker.worker_base import WorkerWrapperBase
 import contextlib

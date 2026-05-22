@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
 
-# ------------------------------------------------------------
-# Note: this patch is to support sleep_mode on maca backend.
-#       We need to replace cuda `CuMemAllocator` with maca's.
-# ------------------------------------------------------------
+# -----------------------------------------------
+# Note: Replace CUDA `CuMemAllocator` with the MetaX allocator to support
+#       sleep mode on MACA.
+#
+# Affected versions: v0.21.0
+# -----------------------------------------------
 
 
 import vllm

@@ -1,5 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 # 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
+# -----------------------------------------------
+# Note: Work around PyTorch compilation backend regressions affecting MetaX
+#       standalone compilation and artifact caching.
+#
+# Affected versions: v0.21.0
+# Remove at: after PyTorch 2.10+metax and the related vLLM compilation fixes
+#            are available.
+# -----------------------------------------------
 
 
 from vllm.compilation.backends import logger

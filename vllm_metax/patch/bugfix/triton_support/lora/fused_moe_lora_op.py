@@ -1,11 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
-# -----------------------------------------
-# Note: Disable following ops
-#       - tl.extra.cuda.gdc_wait()
-#       - tl.extra.cuda.gdc_launch_dependents()
-#       - tl.make_tensor_descriptor
-# -----------------------------------------
+# -----------------------------------------------
+# Note: Disable unsupported Triton ops in fused MoE LoRA kernels.
+#
+# Affected versions: v0.21.0
+# -----------------------------------------------
 
 from vllm.triton_utils import tl, triton
 from vllm.lora.ops.triton_ops.fused_moe_lora_op import (

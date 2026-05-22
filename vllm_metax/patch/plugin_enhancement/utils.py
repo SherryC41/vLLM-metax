@@ -1,5 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
+# -----------------------------------------------
+# Note: Patch fused-MoE quantization helpers for MetaX INT8 execution paths.
+#
+# Affected versions: v0.21.0
+# -----------------------------------------------
 import torch
 from vllm.logger import init_logger
 from vllm.model_executor.layers.quantization.utils.int8_utils import (

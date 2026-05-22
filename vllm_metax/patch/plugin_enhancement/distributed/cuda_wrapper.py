@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
 
-# -------------------------------------------------------
-# Note: This patch is for compatibility on Metax platform,
-#       replaced some libraries' interface with maca's
-# -------------------------------------------------------
+# -----------------------------------------------
+# Note: Provide a CUDA API compatibility wrapper backed by MetaX libraries.
+#
+# Affected versions: v0.21.0
+# -----------------------------------------------
 
 """This file is a pure Python wrapper for the cudart library.
 It avoids the need to compile a separate shared library, and is

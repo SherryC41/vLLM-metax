@@ -1,5 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
+# -----------------------------------------------
+# Note: Disable Triton JIT monitoring because MACA does not support it.
+#
+# Affected versions: v0.21.0
+# -----------------------------------------------
 import vllm
 from vllm.triton_utils.jit_monitor import logger
 

@@ -8,12 +8,13 @@
 # the following copyright notice:
 # Copyright (c) 2023-2025, Songlin Yang, Yu Zhang
 # ruff: noqa: E501
-
-
-# ------------------------------------------------------------
-# Note: maca need to reduce the nums_stages to avoid
-#       hardware limit of triton shmem size.
-# ------------------------------------------------------------
+#
+# -----------------------------------------------
+# Note: Reduce Triton `num_stages` in `chunk_delta_h` kernels to stay within
+#       MACA shared-memory limits.
+#
+# Affected versions: v0.21.0
+# -----------------------------------------------
 
 from vllm.triton_utils import tl, triton
 from vllm.model_executor.layers.fla.ops.op import exp

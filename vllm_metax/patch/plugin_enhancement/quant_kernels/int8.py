@@ -1,5 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
+# -----------------------------------------------
+# Note: Override INT8 MoE kernel dispatch to use MetaX Triton experts.
+#
+# Affected versions: v0.21.0
+# -----------------------------------------------
 
 # import torch
 # from enum import Enum

@@ -1,5 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
+# -----------------------------------------------
+# Note: Allow MLA prefill backends to be overridden and registered dynamically.
+#
+# Affected versions: v0.21.0
+# -----------------------------------------------
 from collections.abc import Callable
 from vllm.v1.attention.backends.mla.prefill.registry import MLAPrefillBackendEnum
 

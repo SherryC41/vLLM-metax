@@ -1,9 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
 
-# ------------------------------------------------
-# Note: replace `do_shrink_kernel` in vllm.lora.ops.triton_ops.lora_shrink
-# ------------------------------------------------
+# -----------------------------------------------
+# Note: Replace the LoRA shrink Triton kernel with a MetaX-compatible
+#       implementation.
+#
+# Affected versions: v0.21.0
+# -----------------------------------------------
 """
 Not sure whether this is the best way to patch the function,
 but it works for now. This kernel is invoked in lora_shrink,

@@ -1,12 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
 
-# ------------------------------------------------------------------------
-# Note: This file contains non-functional code changes (chores) for vLLM
-#       to support the Metax platform.
+# -----------------------------------------------
+# Note: Suppress incorrect flash-attention version error logs on MACA.
 #
-# Remove the wrong error log for Maca when checking the flash attention version.
-# ------------------------------------------------------------------------
+# Affected versions: v0.21.0
+# -----------------------------------------------
 
 import vllm.v1.attention.backends.fa_utils
 from vllm_metax.v1.attention.backends.fa_utils import get_flash_attn_version

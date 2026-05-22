@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# -----------------------------------------------
+# Note: Set benchmark serving defaults for deterministic sampling on MetaX.
+#
+# Affected versions: v0.21.0
+# -----------------------------------------------
 
 import argparse
 import json
@@ -11,11 +16,6 @@ from vllm.benchmarks.datasets import add_dataset_parser
 from vllm.benchmarks.lib.endpoint_request_func import (
     ASYNC_REQUEST_FUNCS,
 )
-
-
-# ------------------------------------------------------
-# Note: set sampling_group's default temperature to 0.0.
-# Which makes the output more deterministic and reduce latency variance,
 
 
 def add_cli_args(parser: argparse.ArgumentParser):

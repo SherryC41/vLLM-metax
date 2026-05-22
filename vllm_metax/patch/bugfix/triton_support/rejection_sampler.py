@@ -1,9 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
 
-# ---------------------------------------------------------------------------
-# Note: may remove when triton3.6+metax is released
-# ---------------------------------------------------------------------------
+# -----------------------------------------------
+# Note: Fix Triton rejection sampling kernels for MetaX compatibility.
+#
+# Affected versions: v0.21.0
+# Remove at: after triton3.6+metax is released.
+# -----------------------------------------------
 
 import torch
 from vllm.triton_utils import tl, triton

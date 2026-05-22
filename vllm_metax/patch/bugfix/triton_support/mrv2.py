@@ -2,10 +2,13 @@
 # 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
 
 
-# ---------------------------------------------------------
-# TODO(hank): remove this once triton3.6+metax is released
-#     triton 3.0 does not support _load_ptr on compile time
-# --------------------------------------------------------
+# -----------------------------------------------
+# Note: Work around Triton 3.0 `_load_ptr` compile-time limitations in
+#       MRV2 kernels.
+#
+# Affected versions: v0.21.0
+# Remove at: after triton3.6+metax is released.
+# -----------------------------------------------
 from vllm.triton_utils import tl, triton
 
 
