@@ -21,19 +21,16 @@ class MacaGatedDeltaNetAttention(GatedDeltaNetAttention):
         config: Qwen3NextConfig,
         vllm_config: VllmConfig,
         prefix: str = "",
-        create_in_proj_qkvz: bool = True,
         gqa_interleaved_layout=False,
     ) -> None:
         super().__init__(
             config=config,
             vllm_config=vllm_config,
             prefix=prefix,
-            create_in_proj_qkvz=create_in_proj_qkvz,
             gqa_interleaved_layout=gqa_interleaved_layout,
         )
         # -----------------------------------------
         # Note: set a flag instead of checking attribute in forward
-        self.create_in_proj_qkvz = create_in_proj_qkvz
 
     def forward(
         self,
@@ -50,37 +47,27 @@ class MacaGatedDeltaNetAttention(GatedDeltaNetAttention):
         # ============================================================
         # Part 1: Input Projection
         # ============================================================
-        if not self.create_in_proj_qkvz:
-            # LoRA path (Qwen3.5 only): separate in_proj_qkv and in_proj_z
-            mixed_qkv, _ = self.in_proj_qkv(hidden_states)
-            ba, _ = self.in_proj_ba(hidden_states)
-            z, _ = self.in_proj_z(hidden_states)
+        mixed_qkvz, _ = self.in_proj_qkvz(hidden_states)
+        ba, _ = self.in_proj_ba(hidden_states)
+
+        if self.gqa_interleaved_layout:
+            # Qwen3-Next: unpack the interleaved GQA layout
+            query, key, value, z, b, a = self.fix_query_key_value_ordering(
+                mixed_qkvz, ba
+            )
+            query, key, value = map(
+                lambda x: rearrange(x, "l p d -> l (p d)"), (query, key, value)
+            )
+            mixed_qkv = torch.cat((query, key, value), dim=-1)
+        else:
+            # Qwen3.5: weights are already in [q, k, v, z] and [b, a] order
+            qkv_size = (self.key_dim * 2 + self.value_dim) // self.tp_size
+            z_size = self.value_dim // self.tp_size
+            mixed_qkv, z = mixed_qkvz.split([qkv_size, z_size], dim=-1)
             z = z.reshape(z.size(0), -1, self.head_v_dim)
             b, a = ba.chunk(2, dim=-1)
             b = b.contiguous()
             a = a.contiguous()
-        else:
-            mixed_qkvz, _ = self.in_proj_qkvz(hidden_states)
-            ba, _ = self.in_proj_ba(hidden_states)
-
-            if self.gqa_interleaved_layout:
-                # Qwen3-Next: unpack the interleaved GQA layout
-                query, key, value, z, b, a = self.fix_query_key_value_ordering(
-                    mixed_qkvz, ba
-                )
-                query, key, value = map(
-                    lambda x: rearrange(x, "l p d -> l (p d)"), (query, key, value)
-                )
-                mixed_qkv = torch.cat((query, key, value), dim=-1)
-            else:
-                # Qwen3.5: weights are already in [q, k, v, z] and [b, a] order
-                qkv_size = (self.key_dim * 2 + self.value_dim) // self.tp_size
-                z_size = self.value_dim // self.tp_size
-                mixed_qkv, z = mixed_qkvz.split([qkv_size, z_size], dim=-1)
-                z = z.reshape(z.size(0), -1, self.head_v_dim)
-                b, a = ba.chunk(2, dim=-1)
-                b = b.contiguous()
-                a = a.contiguous()
 
         # ============================================================
         # Part 2: Core Attention (Custom Op)

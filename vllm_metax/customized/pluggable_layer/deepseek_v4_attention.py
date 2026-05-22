@@ -25,10 +25,7 @@ from vllm.model_executor.layers.linear import (
 from vllm_metax.customized.layers.sparse_attn_indexer.sparse_attn_indexer import (
     MacaSparseAttnIndexer as SparseAttnIndexer,
 )
-from vllm.model_executor.layers.utils import cublas_gemm_bf16_bf16_fp32
 from vllm.utils.deep_gemm import fp8_einsum
-
-# from vllm_metax.utils.deep_gemm import
 from vllm.utils.torch_utils import direct_register_custom_op
 from vllm.v1.attention.ops.deepseek_v4_ops import (
     combine_topk_swa_indices,
@@ -63,6 +60,7 @@ from vllm_metax.customized.deepseek_compressor import (
 )
 from vllm.model_executor.layers.layernorm import LayerNorm, RMSNorm
 from vllm.model_executor.layers.quantization import QuantizationConfig
+from vllm.platforms import current_platform
 from vllm.utils.multi_stream_utils import (
     execute_in_parallel,
     maybe_execute_in_parallel,
@@ -112,7 +110,6 @@ class DeepseekV4MLAModules:
     aux_stream_list: list[torch.cuda.Stream] | None = None
 
 
-# --8<-- [start:multi_head_latent_attention]
 @DeepseekV4MultiHeadLatentAttentionWrapper.register_oot
 class MacaDeepseekV4MultiHeadLatentAttentionWrapper(PluggableLayer):
     """Pluggable MLA layer which allows OOT backends to add
@@ -208,8 +205,6 @@ class MacaDeepseekV4MultiHeadLatentAttentionWrapper(PluggableLayer):
         # Pick fp8_einsum recipe based on GPU arch:
         # SM90: FP32 block scales stay [g, r/128, d/128] → sfb_gran_mn=128
         # SM100: INT32 packed scales become [g, r, ...] → sfb_gran_mn=1
-        from vllm.platforms import current_platform
-
         cap = current_platform.get_device_capability()
         assert cap is not None, "DeepseekV4 attention requires a CUDA device"
         self._einsum_recipe = (1, 128, 128) if cap.major <= 9 else (1, 1, 128)
@@ -230,6 +225,7 @@ class MacaDeepseekV4MultiHeadLatentAttentionWrapper(PluggableLayer):
             + self.rope_head_dim * 2  # 64 bf16 RoPE
         )  # 512 *2
 
+        # Will be None on ROCm for now.
         self.aux_stream_list = mla_modules.aux_stream_list
         # [0]: GEMM start / post-GEMM event0. [1..3]: GEMM done events;
         # [1] doubles as post-GEMM event1. Reuse is safe: GEMM fully joins
@@ -342,12 +338,15 @@ class MacaDeepseekV4MultiHeadLatentAttentionWrapper(PluggableLayer):
         return self.wo_b(z.flatten(1))
 
     def attn_gemm_parallel_execute(self, hidden_states) -> tuple[Any, ...]:
-        assert self.aux_stream_list is not None
-        assert len(self.aux_stream_list) >= 3
+        aux_streams = self.aux_stream_list
+        if aux_streams is not None:
+            assert len(aux_streams) >= 3
+            aux_streams = aux_streams[:3]
 
         # fused_wqa_wkv (heaviest) on default; the three lighter input GEMMs
         # on aux streams 0..2 when their owning module exists. ln_events[0]
         # is the fan-out start event; ln_events[1..3] are per-aux done events.
+        # On ROCm, aux_streams is None and execute_in_parallel runs serially.
         aux_fns: list[Callable[[], Any] | None] = [None, None, None]
 
         if self.compressor is not None:
@@ -355,8 +354,10 @@ class MacaDeepseekV4MultiHeadLatentAttentionWrapper(PluggableLayer):
             compressor = self.compressor
 
             def compressor_kv_score() -> torch.Tensor:
-                return cublas_gemm_bf16_bf16_fp32(
-                    hidden_states, compressor.fused_wkv_wgate.weight
+                return torch.mm(
+                    hidden_states,
+                    compressor.fused_wkv_wgate.weight.T,
+                    out_dtype=torch.float32,
                 )
 
             aux_fns[0] = compressor_kv_score
@@ -370,8 +371,10 @@ class MacaDeepseekV4MultiHeadLatentAttentionWrapper(PluggableLayer):
                 return weights
 
             def indexer_compressor_kv_score() -> torch.Tensor:
-                return cublas_gemm_bf16_bf16_fp32(
-                    hidden_states, indexer.compressor.fused_wkv_wgate.weight
+                return torch.mm(
+                    hidden_states,
+                    indexer.compressor.fused_wkv_wgate.weight.T,
+                    out_dtype=torch.float32,
                 )
 
             aux_fns[1] = indexer_weights_proj
@@ -387,7 +390,7 @@ class MacaDeepseekV4MultiHeadLatentAttentionWrapper(PluggableLayer):
             aux_fns,
             self.ln_events[0],
             self.ln_events[1:4],
-            self.aux_stream_list[:3],
+            aux_streams,
             enable=hidden_states.shape[0]
             <= envs.VLLM_MULTI_STREAM_GEMM_TOKEN_THRESHOLD,
         )
@@ -421,8 +424,9 @@ class MacaDeepseekV4MultiHeadLatentAttentionWrapper(PluggableLayer):
         # downstream reads q on default). Indexer/compressor go on aux for
         # overlap with default's GEMM + cache write.
         if self.indexer is not None:
-            assert self.aux_stream_list is not None
-            aux_stream = self.aux_stream_list[0]
+            aux_stream = (
+                self.aux_stream_list[0] if self.aux_stream_list is not None else None
+            )
             indexer = self.indexer
             # Local ref so the closure keeps a non-None type for mypy.
             assert self.compressor is not None
@@ -450,8 +454,9 @@ class MacaDeepseekV4MultiHeadLatentAttentionWrapper(PluggableLayer):
             )
         elif self.compressor is not None:
             # wq_b + kv_insert on default, compressor on aux.
-            assert self.aux_stream_list is not None
-            aux_stream = self.aux_stream_list[0]
+            aux_stream = (
+                self.aux_stream_list[0] if self.aux_stream_list is not None else None
+            )
             compressor = self.compressor
 
             def wq_b_kv_insert() -> torch.Tensor:

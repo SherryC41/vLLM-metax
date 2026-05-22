@@ -3,4 +3,3 @@
 from . import mm_encoder_attention  # noqa: F401
 from . import unquantized_fused_moe_method  # noqa: F401
 from . import sparse_attn_indexer  # noqa: F401
-from . import minimax_text01_rmsnorm  # noqa: F401
