@@ -34,7 +34,7 @@ def backend_to_kernel_cls(
     backend: Int8MoeBackend,
 ) -> type[mk.FusedMoEExperts]:
     if backend == Int8MoeBackend.TRITON:
-        from vllm_metax.model_executor.layers.fused_moe.fused_moe import (
+        from vllm_metax.model_executor.layers.fused_moe.experts.triton_moe import (
             TritonExperts,
         )
 
