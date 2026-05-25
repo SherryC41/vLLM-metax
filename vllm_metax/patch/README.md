@@ -15,7 +15,7 @@ without having to modify the vllm source code directly.
 
 ## Principles:
 
-Patches are **not recommended** for general use and it was out of necessity. Before applying a patch, please make sure that you have a clear understanding of the issue it addressed and the changes it introduces. Try to figure out if there is already a way that vllm offers to apply your patch. 
+Patches are **not recommended** for general use and it was out of necessity. Before applying a patch, please make sure that you have a clear understanding of the issue it addressed and the changes it introduces. Always try to figure out if there is already a way that vllm offers to achieve the same functionality without patching. 
 
 E.g., the registry system for `CustomOp` and `PluggableLayer`:
 
@@ -44,8 +44,8 @@ This subdirectory contains patches that enhance the functionality of plugins.
 This subdirectory contains patches that optimize the performance of the codebase. 
 
 ### `torch_fix/`:
-The patch is need to be manually applied in `vllm_metax/__init__.py` to fix specific PyTorch issues that affect MetaX.
-This need to be affected ahead of all other patches to make sure the torch fix is applied globally.
+torch fix needs to be manually applied in `vllm_metax/__init__.py` to fix specific PyTorch 
+issues with `torch+metax`, and it's must be applied ahead of all other patches.
 
 ## Requirements for Patches
 
