@@ -321,6 +321,12 @@ class MacaPlatformBase(Platform):
                 f"set FusedMoE tuned config dir by hidden_size={hidden_size}",
             )
 
+        # -------------------------------------------------------
+        # Note: Hotfix for Gemma 4 flash attention issue (addressed in upstream)
+        if model_config is not None:
+            if model_config.hf_config.model_type in ("gemma4_text", "gemma4"):
+                model_config.model_arch_config.is_mm_prefix_lm = False
+
     @classmethod
     def get_current_memory_usage(
         cls, device: torch.types.Device | None = None
