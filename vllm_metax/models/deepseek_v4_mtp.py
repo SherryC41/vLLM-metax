@@ -85,6 +85,7 @@ class DeepSeekV4MultiTokenPredictorLayer(nn.Module):
             bias=False,
             return_bias=False,
             quant_config=quant_config,
+            prefix=maybe_prefix(prefix, "e_proj"),
         )
         self.h_proj = ReplicatedLinear(
             config.hidden_size,
@@ -92,6 +93,7 @@ class DeepSeekV4MultiTokenPredictorLayer(nn.Module):
             bias=False,
             return_bias=False,
             quant_config=quant_config,
+            prefix=maybe_prefix(prefix, "h_proj"),
         )
 
         self.hc_eps = config.hc_eps
@@ -171,7 +173,7 @@ class DeepSeekV4MultiTokenPredictor(nn.Module):
         # DeepseekV4Model. ROCm runs the same work serially for now.
         aux_stream_list = (
             None
-            if current_platform.is_rocm()
+            if current_platform.is_out_of_tree()
             else [torch.cuda.Stream() for _ in range(3)]
         )
 
@@ -341,10 +343,12 @@ class DeepSeekV4MTP(nn.Module):
         # FP8 experts register ``..._weight_scale_inv`` (block_quant) while
         # FP4/MXFP4 experts register ``..._weight_scale``. Choose the suffix
         # for the rename below based on the model's expert dtype.
+        # --------------------------------
+        # Note: Metax we use .weight_scale
         expert_scale_suffix = (
             ".weight_scale"
-            if getattr(self.config, "expert_dtype", "fp4") == "fp4"
-            else ".weight_scale_inv"
+            # if getattr(self.config, "expert_dtype", "fp4") == "fp4"
+            # else ".weight_scale_inv"
         )
 
         for name, loaded_weight in weights:

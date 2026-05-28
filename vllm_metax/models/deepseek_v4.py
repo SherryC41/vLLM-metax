@@ -8,6 +8,7 @@ from itertools import islice
 import regex as re
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import VllmConfig, get_current_vllm_config
@@ -1254,7 +1255,7 @@ class DeepseekV4Model(nn.Module):
         # Disable them on ROCm because of hang issues.
         aux_stream_list = (
             None
-            if current_platform.is_rocm()
+            if current_platform.is_out_of_tree()
             else [torch.cuda.Stream() for _ in range(3)]
         )
 

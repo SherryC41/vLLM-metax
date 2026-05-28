@@ -41,7 +41,7 @@ def _gather_workspace_shapes_int8(
     the K-gather workspace."""
     return (
         ((total_seq_lens, head_dim), int8_dtype),
-        ((total_seq_lens, 4), torch.float32),
+        ((total_seq_lens, 4), torch.uint8),
     )
 
 

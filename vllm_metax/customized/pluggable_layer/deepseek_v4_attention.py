@@ -58,7 +58,7 @@ from vllm.model_executor.layers.attention_layer_base import AttentionLayerBase
 from vllm_metax.customized.deepseek_compressor import (
     MacaDeepseekCompressor as DeepseekCompressor,
 )
-from vllm.model_executor.layers.layernorm import LayerNorm, RMSNorm
+from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.platforms import current_platform
 from vllm.utils.multi_stream_utils import (
@@ -1112,7 +1112,7 @@ class DeepseekV4Indexer(nn.Module):
             quant_config=None,
             prefix=f"{prefix}.weights_proj",
         )
-        self.k_norm = LayerNorm(self.head_dim, eps=1e-6)
+        # self.k_norm = LayerNorm(self.head_dim, eps=1e-6)
         self.softmax_scale = self.head_dim**-0.5
 
         self.scale_fmt = "int8"

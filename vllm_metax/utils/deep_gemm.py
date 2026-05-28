@@ -279,7 +279,7 @@ def tf32_hc_prenorm_gemm(
     _lazy_init()
     if _tf32_hc_prenorm_gemm_impl is None:
         return _missing()
-    return _tf32_hc_prenorm_gemm_impl(x, fn, out, sqrsum, num_split, "torch")
+    return _tf32_hc_prenorm_gemm_impl(x, fn, out, sqrsum, num_split)
 
 
 __all__ = [
