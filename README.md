@@ -80,7 +80,6 @@ Below are the maintained branches:
 | Branch      | Status       | Note                                 |
 |-------------|--------------|--------------------------------------|
 | master      | N/A | Tracks vLLM main; functionality is not guaranteed |
-| v0.20.0 | Under testing | WIP |
 | releases/v0.19.0 | Released | Corresponds to vLLM release v0.19.0 |
 | releases/v0.18.0 | Released | Corresponds to vLLM release v0.18.0 |
 | releases/v0.17.0 | Released | Corresponds to vLLM release v0.17.0 |
