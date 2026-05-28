@@ -13,12 +13,12 @@ from vllm.logger import logger
 
 # support W4A8 Per-Channel start
 # Init FusedMoeGEMM instance
-mctlass_op_per_channel = None
+mctlass_moe_gemm = None
 with contextlib.suppress(ImportError):
-    if mctlass_op_per_channel is None:
+    if mctlass_moe_gemm is None:
         from mctlassEx import FusedMoeGEMM
 
-        mctlass_op_per_channel = FusedMoeGEMM()
+        mctlass_moe_gemm = FusedMoeGEMM()
 
 
 # GEMM
@@ -41,8 +41,8 @@ def mctlassEx_fused_moe_w4a8_gemm_per_channel(
     num_tokens_post_padded: torch.Tensor,
     mul_routed_weight: bool,
 ) -> torch.Tensor:
-    assert mctlass_op_per_channel is not None, "mctlassOp is not imported correctly"
-    mctlass_op_per_channel(
+    assert mctlass_moe_gemm is not None, "mctlassMoeGEMM is not imported correctly"
+    mctlass_moe_gemm(
         batch_size,
         N,
         K,
@@ -107,10 +107,8 @@ def mctlassEx_fused_moe_w4a8_get_kernel_m_per_channel(
     K: int,
     topk: int,
 ) -> int:
-    assert mctlass_op_per_channel is not None, "mctlassOp is not imported correctly"
-    return mctlass_op_per_channel.get_kernel_m(
-        a, b, c, num_experts, batch_size, N, K, topk
-    )
+    assert mctlass_moe_gemm is not None, "mctlassOp is not imported correctly"
+    return mctlass_moe_gemm.get_kernel_m(a, b, c, num_experts, batch_size, N, K, topk)
 
 
 # end
@@ -272,9 +270,19 @@ def mctlassEx_fused_moe_w4a8_get_kernel_m(
     topk: int,
     group_size: int,
 ) -> int:
-    assert mctlass_op is not None, "mctlassOp is not imported correctly"
-    return mctlass_op.mctlass_fuse_moe_get_kernel_m_basic(
-        a, b, c, num_experts, batch_size, N, K, num_valid_tokens, topk, group_size
+    assert mctlass_moe_gemm is not None, "mctlassMoeGEMM is not imported correctly"
+    return mctlass_moe_gemm.get_kernel_m(
+        a,
+        b,
+        c,
+        num_experts,
+        batch_size,
+        N,
+        K,
+        topk,
+        num_valid_tokens=num_valid_tokens,
+        is_blockwise=True,
+        group_size=group_size,
     )
 
 
@@ -298,26 +306,27 @@ def mctlassEx_fused_moe_w4a8_gemm(
     mul_routed_weight: bool,
     group_size: int,
 ) -> torch.Tensor:
-    assert mctlass_op is not None, "mctlassOp is not imported correctly"
-    mctlass_op.mctlass_fuse_moe_gemm_basic(
+    assert mctlass_moe_gemm is not None, "mctlassMoeGEMM is not imported correctly"
+    mctlass_moe_gemm(
+        batch_size,
+        N,
+        K,
+        num_experts,
+        EM,
+        topk,
         a,
         b,
         c,
         a_scales,
         b_scales,
+        None,
         topk_weights,
         token_ids,
         expert_ids,
         num_tokens_post_padded,
-        num_experts,
-        batch_size,
-        N,
-        K,
-        num_valid_tokens,
-        EM,
-        topk,
         mul_routed_weight,
-        group_size,
+        is_blockwise=True,
+        group_size=group_size,
     )
     return c
 
