@@ -9,7 +9,6 @@ import torch
 
 from vllm.platforms import current_platform
 from vllm.utils.import_utils import has_tilelang
-from vllm.utils.math_utils import cdiv
 from vllm.utils.torch_utils import direct_register_custom_op
 
 # tilelang is only available on CUDA platforms
@@ -27,16 +26,8 @@ else:
 
 
 @cache
-def compute_num_split(block_k: int, k: int | None, grid_size: int) -> int:
-    device_props = torch.cuda.get_device_properties(0)
-    n_sms = device_props.multi_processor_count
-    split_k = n_sms // grid_size
-    if k is not None:
-        # avoid split_k for small k
-        num_block_k = cdiv(k, block_k)
-        split_k = min(split_k, num_block_k // 4)
-    split_k = max(split_k, 1)
-    return split_k
+def compute_num_split(num_tokrns: int) -> int:
+    return 16 if num_tokrns >= 512 else 64
 
 
 def round_to_tf32(x: torch.Tensor) -> torch.Tensor:
@@ -310,6 +301,8 @@ def mhc_pre(
     residual_flat = residual.view(-1, mhc_mult, hidden_size)
     num_tokens = residual_flat.shape[0]
     fn_flat = fn  # noqa: F841
+
+    n_splits = compute_num_split(num_tokens)
 
     post_mix = torch.empty(
         num_tokens, mhc_mult, dtype=torch.float32, device=residual.device

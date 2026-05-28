@@ -185,6 +185,9 @@ class TritonExperts(LoRAExpertsMixin, mk.FusedMoEExpertsModular):
         # Check constraints.
         if self.quant_config.use_int4_w4a16:
             assert hidden_states.size(-1) // 2 == w1.size(2), "Hidden size mismatch"
+        if self.quant_config.use_int4_w4a8:
+            # 8bit activation and int4 packed weight
+            assert hidden_states.size(-1) // 8 == w1.size(2), "Hidden size mismatch"
         else:
             assert hidden_states.size(-1) == w1.size(2), (
                 f"Hidden size mismatch {hidden_states.size(-1)} != {w1.size(2)}"
@@ -333,7 +336,7 @@ class TritonExperts(LoRAExpertsMixin, mk.FusedMoEExpertsModular):
             intermediate_cache1,
             a1q_scale,
             self.w1_scale,
-            None,  # topk_weights
+            topk_weights,  # topk_weights mctlass bug here: must not be None
             sorted_token_ids,
             expert_ids,
             num_tokens_post_padded,
