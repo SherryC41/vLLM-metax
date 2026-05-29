@@ -4,6 +4,7 @@
 """Triton-based MoE expert implementations."""
 
 import importlib
+from functools import partial
 from typing import Any
 
 import torch
@@ -16,14 +17,14 @@ from vllm.model_executor.layers.fused_moe.config import (
     FusedMoEParallelConfig,
     FusedMoEQuantConfig,
 )
+from vllm.model_executor.layers.fused_moe.experts.lora_experts_mixin import (
+    LoRAExpertsMixin,
+)
 from vllm_metax.model_executor.layers.fused_moe.fused_moe import (
     _prepare_expert_assignment,
     invoke_fused_moe_triton_kernel,
     invoke_fused_moe_wna16_triton_kernel,
     try_get_optimal_moe_config,
-)
-from vllm.model_executor.layers.fused_moe.lora_experts_mixin import (
-    LoRAExpertsMixin,
 )
 from vllm.model_executor.layers.fused_moe.moe_align_block_size import (
     moe_align_block_size,
@@ -34,6 +35,10 @@ from vllm.model_executor.layers.fused_moe.topk_weight_and_reduce import (
 from vllm.model_executor.layers.fused_moe.utils import (
     _resize_cache,
     moe_kernel_quantize_input,
+    swiglu_limit_func,
+)
+from vllm.model_executor.layers.quantization.utils.fp8_utils import (
+    is_deep_gemm_e8m0_used,
 )
 from vllm.model_executor.layers.quantization.utils.quant_utils import (
     QuantKey,
@@ -48,9 +53,11 @@ from vllm.model_executor.layers.quantization.utils.quant_utils import (
 )
 from vllm.platforms import current_platform
 from vllm.triton_utils import tl
+from vllm.utils.multi_stream_utils import maybe_execute_in_parallel
 from vllm_metax.model_executor.layers.fused_moe.utils import (
     get_config_dtype_str,
     initialize_staged_config,
+    maybe_override_stage_block_size_m,
 )
 import vllm_metax.envs as mx_envs
 
@@ -147,6 +154,16 @@ class TritonExperts(LoRAExpertsMixin, mk.FusedMoEExpertsModular):
     def finalize_weight_and_reduce_impl(self) -> mk.TopKWeightAndReduce:
         return TopKWeightAndReduceNoOP()
 
+    def activation(
+        self, activation: MoEActivation, output: torch.Tensor, input: torch.Tensor
+    ) -> None:
+        gemm1_clamp_limit = self.quant_config.gemm1_clamp_limit
+        if activation == MoEActivation.SILU and gemm1_clamp_limit is not None:
+            swiglu_limit_func(output, input, float(gemm1_clamp_limit))
+            return
+
+        super().activation(activation, output, input)
+
     def workspace_shapes(
         self,
         M: int,
@@ -234,7 +251,7 @@ class TritonExperts(LoRAExpertsMixin, mk.FusedMoEExpertsModular):
             block_shape=self.block_shape,
         )
         # /------------------------- Metax Modification --------------------------\
-        stage1_config, stage2_config = initialize_staged_config(config)
+        staged_configs = initialize_staged_config(config)
         # \-----------------------------------------------------------------------/
 
         if hidden_states.dtype == torch.bfloat16:
@@ -258,65 +275,28 @@ class TritonExperts(LoRAExpertsMixin, mk.FusedMoEExpertsModular):
             workspace13, (num_tokens * top_k_num, cache2_dim)
         )
         intermediate_cache3 = _resize_cache(workspace2, (num_tokens, top_k_num, K))
-
-        def maybe_override_stage_block_size_m(block_size_m: int) -> int:
-            if (
-                self.quant_config.use_int8_w8a8
-                and mx_envs.MACA_VLLM_ENABLE_MCTLASS_FUSED_MOE
-            ):
-                kernel_m = mctlass_ops.cutlass_moe_mm_w8a8_get_kernel_m(
-                    hidden_states, w1, intermediate_cache1, top_k_num
-                )
-                assert kernel_m > 0, (
-                    "cutlass_moe_w8a8 BLOCK_SIZE_M must greater than zero."
-                )
-                stage1_config["BLOCK_SIZE_M"] = kernel_m
-                stage2_config["BLOCK_SIZE_M"] = kernel_m
-                return kernel_m
-
-            if (
-                self.quant_config.use_int4_w4a8
-                and mx_envs.MACA_VLLM_ENABLE_MCTLASS_PYTHON_API
-            ):
-                if self.block_shape is None:
-                    kernel_m = mctlass_ops.cutlass_moe_mm_w4a8_get_kernel_m_per_channel(
-                        a=hidden_states,
-                        b=w1,
-                        c=intermediate_cache1,
-                        K=K,
-                        num_valid_tokens=hidden_states.size(0) * top_k_num,
-                        topk=top_k_num,
-                    )
-                else:
-                    kernel_m = mctlass_ops.mctlassEx_fused_moe_w4a8_get_kernel_m(
-                        hidden_states,
-                        w1.view(dtype=torch.quint4x2),
-                        intermediate_cache1,
-                        num_experts=w1.size(0),
-                        batch_size=hidden_states.size(0),
-                        N=N,
-                        K=K,
-                        num_valid_tokens=num_tokens,
-                        topk=top_k_num,
-                        group_size=self.block_shape[1],
-                    )
-                assert kernel_m > 0, (
-                    "cutlass_fused_moe_w4a8 BLOCK_SIZE_M must greater than zero."
-                )
-                stage1_config["BLOCK_SIZE_M"] = kernel_m
-                stage2_config["BLOCK_SIZE_M"] = kernel_m
-                return kernel_m
-
-            return block_size_m
+        block_size_m_override = partial(
+            maybe_override_stage_block_size_m,
+            hidden_states,
+            w1,
+            intermediate_cache1,
+            self.quant_config,
+            staged_configs,
+            top_k_num,
+            self.block_shape,
+            num_tokens,
+            N,
+            K,
+        )
 
         # Ensure correctness when SPLIT_K>1 (atomic_add path).
-        if stage1_config.get("SPLIT_K", 1) > 1:
+        if staged_configs[0].get("SPLIT_K", 1) > 1:
             intermediate_cache1.zero_()
 
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
             _prepare_expert_assignment(
                 topk_ids,
-                stage1_config,
+                staged_configs[0],
                 num_tokens,
                 top_k_num,
                 global_num_experts,
@@ -326,81 +306,141 @@ class TritonExperts(LoRAExpertsMixin, mk.FusedMoEExpertsModular):
                 use_int8_w8a8=self.quant_config.use_int8_w8a8,
                 use_int4_w4a8=self.quant_config.use_int4_w4a8,
                 block_shape=self.block_shape,
-                block_size_m_override_getter=maybe_override_stage_block_size_m,
+                block_size_m_override=block_size_m_override,
             )
         )
 
-        invoke_fused_moe_triton_kernel(
-            hidden_states,
-            w1,
-            intermediate_cache1,
-            a1q_scale,
-            self.w1_scale,
-            topk_weights,  # topk_weights mctlass bug here: must not be None
-            sorted_token_ids,
-            expert_ids,
-            num_tokens_post_padded,
-            False,  # mul_routed_weights
-            top_k_num,
-            stage1_config,
-            compute_type=compute_type,
-            use_fp8_w8a8=self.quant_config.use_fp8_w8a8,
-            use_int8_w8a8=self.quant_config.use_int8_w8a8,
-            use_int8_w8a16=self.quant_config.use_int8_w8a16,
-            use_int4_w4a8=self.quant_config.use_int4_w4a8,
-            use_int4_w4a16=self.quant_config.use_int4_w4a16,
-            per_channel_quant=self.per_act_token_quant,
-            block_shape=self.block_shape,
-            B_bias=self.w1_bias,
-        )
+        # LoRA w13: applied to intermediate_cache1 before activation. When
+        # the LoRA layer requested a dual-stream schedule, we run base w13
+        # GEMM on the default stream and the LoRA fast-path on aux_stream;
+        # the LoRA writes its delta into a fresh zero buffer (add_inputs=
+        # False) and we sum it into intermediate_cache1 after both finish.
 
-        # LoRA w13: applied to intermediate_cache1 before activation, using
-        # hidden_states as the lora_a input.  moe_lora_align_block_size is
-        # called once here and results reused for the w2 LoRA below.
         sorted_token_ids_lora = None
         expert_ids_lora = None
         num_tokens_post_padded_lora = None
         token_lora_mapping = None
         lora_context = self._lora_context
-        if lora_context is not None:
+
+        def _base_w13_fn():
+            invoke_fused_moe_triton_kernel(
+                hidden_states,
+                w1,
+                intermediate_cache1,
+                a1q_scale if a1q_scale is not None else self.a1_scale,
+                self.w1_scale,
+                topk_weights,  # topk_weights mctlass bug here: must not be None
+                sorted_token_ids,
+                expert_ids,
+                num_tokens_post_padded,
+                False,  # mul_routed_weights
+                top_k_num,
+                staged_configs[0],
+                compute_type=compute_type,
+                use_fp8_w8a8=self.quant_config.use_fp8_w8a8,
+                use_int8_w8a8=self.quant_config.use_int8_w8a8,
+                use_int8_w8a16=self.quant_config.use_int8_w8a16,
+                use_int4_w4a8=self.quant_config.use_int4_w4a8,
+                use_int4_w4a16=self.quant_config.use_int4_w4a16,
+                per_channel_quant=self.per_act_token_quant,
+                block_shape=self.block_shape,
+                B_bias=self.w1_bias,
+            )
+
+        if lora_context is not None and lora_context.aux_stream is not None:
+            # add_inputs=False: kernel overwrites lora_delta_w13. zeros (not
+            # empty) so untouched rows -- e.g. blocks where every program
+            # early-exits because lora_id<0 -- stay at zero and the trailing
+            # add_() is a no-op there.
+            lora_delta_w13 = torch.zeros_like(intermediate_cache1)
+
+            def _lora_w13_fn():
+                return self.apply_w13_lora(
+                    lora_context,
+                    y=lora_delta_w13,
+                    x=hidden_states,
+                    topk_ids=topk_ids,
+                    topk_weights=topk_weights,
+                    expert_map=expert_map,
+                    w1=w1,
+                    w2=w2,
+                    num_tokens=num_tokens,
+                    top_k_num=top_k_num,
+                    add_inputs=False,
+                )
+
+            assert lora_context.events is not None
+            _, lora_meta = maybe_execute_in_parallel(
+                _base_w13_fn,
+                _lora_w13_fn,
+                lora_context.events[0],
+                lora_context.events[1],
+                lora_context.aux_stream,
+            )
             (
                 sorted_token_ids_lora,
                 expert_ids_lora,
                 num_tokens_post_padded_lora,
                 token_lora_mapping,
-            ) = self.apply_w13_lora(
-                lora_context,
-                y=intermediate_cache1,
-                x=hidden_states,
-                topk_ids=topk_ids,
-                topk_weights=topk_weights,
-                expert_map=expert_map,
-                w1=w1,
-                w2=w2,
-                num_tokens=num_tokens,
-                top_k_num=top_k_num,
-            )
-
-        self.activation(
-            activation, intermediate_cache2, intermediate_cache1.view(-1, N)
-        )
+            ) = lora_meta
+            intermediate_cache1.add_(lora_delta_w13)
+        else:
+            _base_w13_fn()
+            if lora_context is not None:
+                (
+                    sorted_token_ids_lora,
+                    expert_ids_lora,
+                    num_tokens_post_padded_lora,
+                    token_lora_mapping,
+                ) = self.apply_w13_lora(
+                    lora_context,
+                    y=intermediate_cache1,
+                    x=hidden_states,
+                    topk_ids=topk_ids,
+                    topk_weights=topk_weights,
+                    expert_map=expert_map,
+                    w1=w1,
+                    w2=w2,
+                    num_tokens=num_tokens,
+                    top_k_num=top_k_num,
+                )
 
         a2q_scale: torch.Tensor | None = None
 
-        qintermediate_cache2, a2q_scale = moe_kernel_quantize_input(
-            intermediate_cache2,
-            a2_scale,
-            self.quant_dtype,
-            self.per_act_token_quant,
-            self.block_shape,
-            quantization_emulation=self.quantization_emulation,
-        )
+        # Fuse SiLU+Mul + FP8 block quantize into a single kernel
+        # when conditions permit (gated SiLU, fp8 block quant with
+        # group_size=128, no LoRA requiring the BF16 intermediate).
+        if (
+            activation == MoEActivation.SILU
+            and self.quant_config.use_fp8_w8a8
+            and self.block_shape == [128, 128]
+            and lora_context is None
+            and not is_deep_gemm_e8m0_used()
+        ):
+            qintermediate_cache2, a2q_scale = ops.silu_and_mul_per_block_quant(
+                intermediate_cache1.view(-1, N),
+                group_size=128,
+                quant_dtype=current_platform.fp8_dtype(),
+            )
+        else:
+            self.activation(
+                activation, intermediate_cache2, intermediate_cache1.view(-1, N)
+            )
 
-        if stage2_config["BLOCK_SIZE_M"] != stage1_config["BLOCK_SIZE_M"]:
+            qintermediate_cache2, a2q_scale = moe_kernel_quantize_input(
+                intermediate_cache2,
+                a2_scale,
+                self.quant_dtype,
+                self.per_act_token_quant,
+                self.block_shape,
+                quantization_emulation=self.quantization_emulation,
+            )
+
+        if staged_configs[1]["BLOCK_SIZE_M"] != staged_configs[0]["BLOCK_SIZE_M"]:
             sorted_token_ids, expert_ids, num_tokens_post_padded = (
                 _prepare_expert_assignment(
                     topk_ids,
-                    stage2_config,
+                    staged_configs[1],
                     num_tokens,
                     top_k_num,
                     global_num_experts,
@@ -413,51 +453,85 @@ class TritonExperts(LoRAExpertsMixin, mk.FusedMoEExpertsModular):
                 )
             )
 
-        if expert_map is not None or stage2_config.get("SPLIT_K", 1) > 1:
+        if expert_map is not None or staged_configs[1].get("SPLIT_K", 1) > 1:
             intermediate_cache3.zero_()
-
-        invoke_fused_moe_triton_kernel(
-            qintermediate_cache2,
-            w2,
-            intermediate_cache3,
-            a2q_scale,
-            self.w2_scale,
-            topk_weights,
-            sorted_token_ids,
-            expert_ids,
-            num_tokens_post_padded,
-            not apply_router_weight_on_input,
-            1,
-            stage2_config,
-            compute_type=compute_type,
-            use_fp8_w8a8=self.quant_config.use_fp8_w8a8,
-            use_int8_w8a8=self.quant_config.use_int8_w8a8,
-            use_int8_w8a16=self.quant_config.use_int8_w8a16,
-            use_int4_w4a8=self.quant_config.use_int4_w4a8,
-            use_int4_w4a16=self.quant_config.use_int4_w4a16,
-            per_channel_quant=self.per_act_token_quant,
-            block_shape=self.block_shape,
-            B_bias=self.w2_bias,
-        )
 
         # LoRA w2: applied to intermediate_cache3 before moe_sum, using the
         # unquantized intermediate_cache2 as the lora_a input.  Reuses the
-        # sorted_token_ids_lora computed above.
-        if lora_context is not None:
-            self.apply_w2_lora(
-                lora_context,
-                y=intermediate_cache3,
-                x=intermediate_cache2,
-                topk_weights=topk_weights,
-                sorted_token_ids_lora=sorted_token_ids_lora,
-                expert_ids_lora=expert_ids_lora,
-                num_tokens_post_padded_lora=num_tokens_post_padded_lora,
-                token_lora_mapping=token_lora_mapping,
-                num_tokens=num_tokens,
-                w1=w1,
-                w2=w2,
-                top_k_num=top_k_num,
+        # sorted_token_ids_lora computed above. Same dual-stream pattern as
+        # the w13 pair: base GEMM on default stream, LoRA delta on aux,
+        # join via .add_() into intermediate_cache3.
+        def _base_w2_fn():
+            invoke_fused_moe_triton_kernel(
+                qintermediate_cache2,
+                w2,
+                intermediate_cache3,
+                a2q_scale,
+                self.w2_scale,
+                topk_weights,
+                sorted_token_ids,
+                expert_ids,
+                num_tokens_post_padded,
+                not apply_router_weight_on_input,
+                1,
+                staged_configs[1],
+                compute_type=compute_type,
+                use_fp8_w8a8=self.quant_config.use_fp8_w8a8,
+                use_int8_w8a8=self.quant_config.use_int8_w8a8,
+                use_int8_w8a16=self.quant_config.use_int8_w8a16,
+                use_int4_w4a8=self.quant_config.use_int4_w4a8,
+                use_int4_w4a16=self.quant_config.use_int4_w4a16,
+                per_channel_quant=self.per_act_token_quant,
+                block_shape=self.block_shape,
+                B_bias=self.w2_bias,
             )
+
+        if lora_context is not None and lora_context.aux_stream is not None:
+            lora_delta_w2 = torch.zeros_like(intermediate_cache3)
+
+            def _lora_w2_fn():
+                self.apply_w2_lora(
+                    lora_context,
+                    y=lora_delta_w2,
+                    x=intermediate_cache2,
+                    topk_weights=topk_weights,
+                    sorted_token_ids_lora=sorted_token_ids_lora,
+                    expert_ids_lora=expert_ids_lora,
+                    num_tokens_post_padded_lora=num_tokens_post_padded_lora,
+                    token_lora_mapping=token_lora_mapping,
+                    num_tokens=num_tokens,
+                    w1=w1,
+                    w2=w2,
+                    top_k_num=top_k_num,
+                    add_inputs=False,
+                )
+
+            assert lora_context.events is not None
+            maybe_execute_in_parallel(
+                _base_w2_fn,
+                _lora_w2_fn,
+                lora_context.events[2],
+                lora_context.events[3],
+                lora_context.aux_stream,
+            )
+            intermediate_cache3.add_(lora_delta_w2)
+        else:
+            _base_w2_fn()
+            if lora_context is not None:
+                self.apply_w2_lora(
+                    lora_context,
+                    y=intermediate_cache3,
+                    x=intermediate_cache2,
+                    topk_weights=topk_weights,
+                    sorted_token_ids_lora=sorted_token_ids_lora,
+                    expert_ids_lora=expert_ids_lora,
+                    num_tokens_post_padded_lora=num_tokens_post_padded_lora,
+                    token_lora_mapping=token_lora_mapping,
+                    num_tokens=num_tokens,
+                    w1=w1,
+                    w2=w2,
+                    top_k_num=top_k_num,
+                )
 
         # separate function is required for MoE + LoRA
         self.moe_sum(intermediate_cache3, output)
@@ -572,7 +646,7 @@ class TritonWNA16Experts(TritonExperts):
         )
 
         # /------------------------- Metax Modification --------------------------\
-        stage1_config, stage2_config = initialize_staged_config(config)
+        staged_config = initialize_staged_config(config)
         # \-----------------------------------------------------------------------/
 
         if hidden_states.dtype == torch.bfloat16:
@@ -599,7 +673,7 @@ class TritonWNA16Experts(TritonExperts):
 
         sorted_token_ids, expert_ids, num_tokens_post_padded = moe_align_block_size(
             topk_ids,
-            stage1_config["BLOCK_SIZE_M"],
+            staged_config[0]["BLOCK_SIZE_M"],
             global_num_experts,
             expert_map,
         )
@@ -616,7 +690,7 @@ class TritonWNA16Experts(TritonExperts):
             num_tokens_post_padded,
             False,  # mul_routed_weights
             top_k_num,
-            stage1_config,
+            staged_config[0],
             compute_type=compute_type,
             use_int8_w8a16=self.quant_config.use_int8_w8a16,
             use_int4_w4a16=self.quant_config.use_int4_w4a16,
@@ -637,17 +711,17 @@ class TritonWNA16Experts(TritonExperts):
             self.block_shape,
         )
 
-        if stage2_config["BLOCK_SIZE_M"] != stage1_config["BLOCK_SIZE_M"]:
+        if staged_config[1]["BLOCK_SIZE_M"] != staged_config[0]["BLOCK_SIZE_M"]:
             sorted_token_ids, expert_ids, num_tokens_post_padded = moe_align_block_size(
                 topk_ids,
-                stage2_config["BLOCK_SIZE_M"],
+                staged_config[1]["BLOCK_SIZE_M"],
                 global_num_experts,
                 expert_map,
             )
 
         # `workspace2` is reused and WNA16 kernels may not overwrite all elements
         # when expert_map is used; clear to avoid stale contributions.
-        if expert_map is not None or stage2_config.get("SPLIT_K", 1) > 1:
+        if expert_map is not None or staged_config[1].get("SPLIT_K", 1) > 1:
             intermediate_cache3.zero_()
 
         invoke_fused_moe_wna16_triton_kernel(
@@ -662,7 +736,7 @@ class TritonWNA16Experts(TritonExperts):
             num_tokens_post_padded,
             not apply_router_weight_on_input,
             1,
-            stage2_config,
+            staged_config[1],
             compute_type=compute_type,
             use_int8_w8a16=self.quant_config.use_int8_w8a16,
             use_int4_w4a16=self.quant_config.use_int4_w4a16,

@@ -1838,7 +1838,7 @@ def _prepare_expert_assignment(
     use_int4_w4a8: bool = False,
     block_shape: list[int] | None = None,
     ignore_invalid_experts: bool = False,
-    block_size_m_override_getter: Callable[[int], int] | None = None,
+    block_size_m_override: Callable | None = None,
 ) -> tuple[torch.Tensor | None, torch.Tensor, torch.Tensor]:
     """Prepare expert assignments for the aligned and low-latency Triton paths."""
     # SPARSITY_FACTOR is a heuristic margin ensuring tokens_in_chunk * top_k
@@ -1873,10 +1873,8 @@ def _prepare_expert_assignment(
             ),
         )
 
-    block_size_m = config["BLOCK_SIZE_M"]
-    if block_size_m_override_getter is not None:
-        block_size_m = block_size_m_override_getter(block_size_m)
-        config["BLOCK_SIZE_M"] = block_size_m
+    if block_size_m_override is not None:
+        block_size_m_override()
 
     return moe_align_block_size(
         topk_ids,
