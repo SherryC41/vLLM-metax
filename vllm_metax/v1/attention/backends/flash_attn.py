@@ -186,16 +186,6 @@ class MacaFlashAttentionBackend(AttentionBackend):
             raise ValueError(f"Unknown cache layout format {cache_layout}.")
         return stride_order
 
-    @staticmethod
-    def get_fp8_dtype_for_flashattn(kv_cache_dtype: str) -> torch.dtype:
-        raise NotImplementedError(
-            "FP8 dtype is not supported for FlashAttention on Maca."
-        )
-        if kv_cache_dtype in ("fp8", "fp8_e4m3"):
-            return torch.float8_e4m3fn
-        else:
-            raise ValueError(f"Unrecognized FP8 dtype: {kv_cache_dtype}")
-
     @classmethod
     def supports_head_size(cls, head_size: int) -> bool:
         if head_size % 8 != 0:
@@ -210,8 +200,13 @@ class MacaFlashAttentionBackend(AttentionBackend):
     def supports_kv_cache_dtype(cls, kv_cache_dtype: CacheDType | None) -> bool:
         if kv_cache_dtype is None:
             return True
-        if is_quantized_kv_cache(kv_cache_dtype):
-            return flash_attn_supports_fp8()
+        if kv_cache_dtype in ("fp8", "fp8_e4m3"):
+            if current_platform.is_xpu():
+                return True
+            return (
+                get_flash_attn_version() == 3
+                and current_platform.is_device_capability_family(90)
+            )
         return kv_cache_dtype in ["auto", "float16", "bfloat16"]
 
     @classmethod
@@ -499,11 +494,6 @@ class FlashAttentionMetadataBuilder(AttentionMetadataBuilder[FlashAttentionMetad
         )
         self.max_cudagraph_size = self.compilation_config.max_cudagraph_capture_size
 
-        # Note: This is used for dcp=1 and without prefill-decode split.
-        # Pre-allocated buffer for cu_seqlens_k to avoid allocations / CPU sync
-        # in the forward pass (important for CUDA graph capture/replay).
-        self._cu_seqlens_k_buffer: torch.Tensor | None = None
-
         if self.use_full_cuda_graph and self.aot_schedule:
             # FA3 scheduler_metadata size: 1 + round_up(batch_size, 4) * 4
             # The +1 is for the tile_count_semaphore (synchronization).
@@ -530,15 +520,6 @@ class FlashAttentionMetadataBuilder(AttentionMetadataBuilder[FlashAttentionMetad
             max_num_reqs = vllm_config.scheduler_config.max_num_seqs
             self._dcp_context_kv_lens = torch.zeros(
                 max_num_reqs,
-                dtype=torch.int32,
-                device=self.device,
-            )
-
-        # Note: This is used for dcp=1 and without prefill-decode split.
-        if self.use_full_cuda_graph:
-            # Note: num_seqs is the upper bound for batch size during capture.
-            self._cu_seqlens_k_buffer = torch.zeros(
-                vllm_config.scheduler_config.max_num_seqs + 1,
                 dtype=torch.int32,
                 device=self.device,
             )
@@ -788,27 +769,6 @@ class FlashAttentionMetadataBuilder(AttentionMetadataBuilder[FlashAttentionMetad
                 max_seq_len=max_seq_len,
                 causal=causal,
             )
-
-            # --------------------------------------------------------------
-            # Note: Precompute cu_seqlens_k (prefix sums over KV lengths) on GPU.
-            # This replaces any forward-time construction that would require
-            # CPU sync (e.g. via .tolist()), which breaks CUDA graph capture.
-            if self.use_full_cuda_graph:
-                if self._cu_seqlens_k_buffer is not None:
-                    n = num_reqs + 1
-                    buf = self._cu_seqlens_k_buffer
-                    # Leading 0, then inclusive cumsum into buf[1:n].
-                    buf[0].zero_()
-                    seq_lens_i32 = seq_lens[:num_reqs].to(dtype=torch.int32)
-                    torch.cumsum(seq_lens_i32, dim=0, dtype=torch.int32, out=buf[1:n])
-                    cu_seqlens_k = buf[:n]
-                else:
-                    cu_seqlens_k = F.pad(
-                        seq_lens[:num_reqs],
-                        (1, 0),
-                        value=0,
-                    ).cumsum(dim=0, dtype=torch.int32)
-
         # For FA3 + full cudagraph
         if self.use_full_cuda_graph and scheduler_metadata is not None:
             n = scheduler_metadata.shape[0]
@@ -931,11 +891,6 @@ class FlashAttentionImpl(AttentionImpl):
         )
         # Cache the batch invariant result for use in forward passes
         self.batch_invariant_enabled = envs.VLLM_BATCH_INVARIANT
-
-        if is_quantized_kv_cache(self.kv_cache_dtype) and not flash_attn_supports_fp8():
-            raise NotImplementedError(
-                "FlashAttention does not support fp8 kv-cache on this device."
-            )
 
         self.sinks = sinks
         if self.sinks is not None:
@@ -1103,11 +1058,8 @@ class FlashAttentionImpl(AttentionImpl):
 
         if is_quantized_kv_cache(self.kv_cache_dtype):
             # queries are quantized in the attention layer
-            dtype = MacaFlashAttentionBackend.get_fp8_dtype_for_flashattn(
-                self.kv_cache_dtype
-            )
-            key_cache = key_cache.view(dtype)
-            value_cache = value_cache.view(dtype)
+            key_cache = key_cache.view(current_platform.fp8_dtype())
+            value_cache = value_cache.view(current_platform.fp8_dtype())
 
         if not attn_metadata.use_cascade:
             cu_seqlens_q = attn_metadata.query_start_loc

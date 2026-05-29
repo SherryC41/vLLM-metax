@@ -453,7 +453,7 @@ def _compute_swa_indices_and_lens_kernel(
 ):
     token_idx = tl.program_id(0)
     is_valid = tl.load(is_valid_token_ptr + token_idx)
-    if is_valid is None:
+    if not is_valid:
         tl.store(swa_lens_ptr + token_idx, 0)
         return
 
