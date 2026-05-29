@@ -48,28 +48,19 @@ def _raise_flashmla_unavailable(*_args, **_kwargs):
 
 
 if _is_flashmla_available()[0]:
-    try:
-        from flash_mla.flash_mla_interface import (  # noqa: F401
-            FlashMLASchedMeta,
-            flash_mla_with_kvcache,
-            get_mla_metadata,
-        )
-    except ImportError:
-        from flash_mla.flash_mla_interface import (  # noqa: F401
-            flash_mla_with_kvcache,
-            get_mla_metadata,
-        )
-
-        @dataclass
-        class FlashMLASchedMeta:  # type: ignore[no-redef]
-            scheduler_metadata: torch.Tensor | None = None
-            num_splits: torch.Tensor | None = None
+    from flash_mla.flash_mla_interface import (  # noqa: F401
+        FlashMLASchedMeta,
+        flash_mla_with_kvcache,
+        flash_mla_sparse_fwd,
+        get_mla_metadata,
+    )
 else:
 
     class FlashMLASchedMeta:  # type: ignore[no-redef]
         pass
 
     flash_mla_with_kvcache = _raise_flashmla_unavailable  # type: ignore[assignment]
+    flash_mla_sparse_fwd = _raise_flashmla_unavailable  # type: ignore[assignment]
     get_mla_metadata = _raise_flashmla_unavailable  # type: ignore[assignment]
 
 
@@ -101,47 +92,7 @@ def flash_mla_with_kvcache_fp8(
     )
 
 
-def flash_mla_sparse_fwd(
-    q: torch.Tensor,
-    kv: torch.Tensor,
-    indices: torch.Tensor,
-    sm_scale: float,
-    d_v: int = 512,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """
-    Sparse attention prefill kernel
-
-    Args:
-    - q: [s_q, h_q, d_qk], bfloat16
-    - kv: [s_kv, h_kv, d_qk], bfloat16
-    - indices: [s_q, h_kv, topk], int32.
-        Invalid indices should be set to -1 or numbers >= s_kv
-    - sm_scale: float
-    - d_v: The dimension of value vectors. Can only be 512
-
-    Returns:
-    - (output, max_logits, lse)
-        About the definition of output,
-        max_logits and lse, please refer to README.md
-    - output: [s_q, h_q, d_v], bfloat16
-    - max_logits:  [s_q, h_q], float
-    - lse: [s_q, h_q], float, 2-based log-sum-exp
-    """
-    # TODO: MetaX flash_mla support
-    # /------------------------  Metax Modification -------------------------\
-    s_kv = kv.shape[0]
-    indices_valid = torch.logical_and(indices != -1, indices < s_kv)
-    # [s_q, h_kv, topk] -> [s_q, h_kv] -> [s_q, 1]
-    indices_all_valid_per_q = indices_valid.all(dim=2).all(dim=1, keepdim=True)
-
-    results = flash_mla.flash_mla_interface.flash_mla_sparse_fwd(
-        q, kv, indices, sm_scale, d_v, indices_all_valid_per_q
-    )
-    # \------------------------- Metax Modification -------------------------/
-    return results
-
-
-def flash_mla_sparse_fwd_v2(
+def flash_mla_sparse_fwd_wrapper(
     q: torch.Tensor,
     kv: torch.Tensor,
     indices: torch.Tensor,
@@ -176,7 +127,6 @@ def flash_mla_sparse_fwd_v2(
     # indices_valid = torch.logical_and(indices != -1, indices < s_kv)
     # # [s_q, h_kv, topk] -> [s_q, h_kv] -> [s_q, 1]
     # indices_all_valid_per_q = indices_valid.all(dim=2).all(dim=1, keepdim=True)
-    indices_all_valid_per_q = None  # unnecessary
 
     results = flash_mla.flash_mla_interface.flash_mla_sparse_fwd(
         q,
@@ -184,7 +134,7 @@ def flash_mla_sparse_fwd_v2(
         indices,
         sm_scale,
         d_v,
-        indices_all_valid_per_q,
+        None,  # indices_all_valid_per_q
         attn_sink,
         topk_length,
         out,
@@ -193,114 +143,7 @@ def flash_mla_sparse_fwd_v2(
     return results
 
 
-#
-# TODO: Add fake functions
-#
-# @register_fake("_flashmla_C::get_mla_metadata")
-# def _get_mla_metadata_fake(....) -> Tuple[torch.Tensor, torch.Tensor]:
-#     return ....
-#
-# @register_fake("_flashmla_C::fwd_kvcache_mla")
-# def _fwd_kvcache_mla_fake(....) -> Tuple[torch.Tensor, torch.Tensor]:
-#     return ....
-#
-
-
-# Metax: torch_ref
-def torch_flash_mla_sparse_prefill(
-    q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor, sm_scale: float
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    import math
-
-    def log2sumexp2(a: torch.Tensor, dim: int) -> torch.Tensor:
-        return torch.logsumexp(a * math.log(2), dim=dim) * math.log2(math.e)
-
-    assert len(q.shape) == len(kv.shape) == 3  # b == 1
-    s_q, _, d_qk = q.shape
-    s_kv, _, _ = kv.shape
-
-    indices = indices[:, 0, :]  # [s_q, topk]
-    invalid_indices_mask = (indices < 0) | (indices >= s_kv)
-    qs = q[:, :, :].float()  # [s_q, h_q, d_qk]
-    kvs = kv[:, 0, :].float()  # [s_kv, d_qk]
-
-    _, topk = indices.shape
-
-    kvs = torch.index_select(
-        kvs, 0, indices.masked_fill(invalid_indices_mask, 0).flatten()
-    ).view(s_q, topk, d_qk)  # [s_q, topk, d_qk]
-    attn_score = qs @ kvs.transpose(1, 2)  # [s_q, h_q, topk]
-    attn_score.masked_fill_(invalid_indices_mask.unsqueeze(1), float("-inf"))
-    attn_score *= sm_scale * math.log2(math.e)
-    max_logits = torch.max(attn_score, dim=-1)[0]  # [s_q, h_q]
-    lse = log2sumexp2(attn_score, dim=-1)  # [s_q, h_q]
-    attn_score = torch.exp2(attn_score - lse.unsqueeze(-1))  # [s_q, h_q, topk]
-    result = attn_score @ kvs[:, :, :512]
-
-    return (result.to(torch.bfloat16), max_logits, lse)
-
-
-# Metax: bf16 decode
-def flash_mla_sparse_decode(
-    q: torch.Tensor,
-    kv_c_and_k_pe_cache: torch.Tensor,
-    block_table: torch.Tensor,
-    cache_seqlens: torch.Tensor,
-    head_dim_v: int,
-    tile_scheduler_metadata: torch.Tensor,
-    num_splits: torch.Tensor,
-    softmax_scale: float | None = None,
-    causal: bool = False,
-    indices: torch.Tensor | None = None,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    Arguments:
-    - q: (batch_size, seq_len_q, num_heads_q, head_dim).
-    - k_cache: (num_blocks, page_block_size, num_heads_k, head_dim).
-    - block_table: (batch_size, max_num_blocks_per_seq), torch.int32.
-    - cache_seqlens: (batch_size), torch.int32.
-    - head_dim_v: Head dimension of v.
-    - tile_scheduler_metadata:
-        (num_sm_parts, TileSchedulerMetaDataSize), torch.int32,
-        returned by get_mla_metadata.
-    - num_splits:
-        (batch_size + 1), torch.int32, returned by get_mla_metadata.
-    - softmax_scale: float.
-        The scale of QK^T before applying softmax.
-        Default to 1 / sqrt(head_dim).
-    - causal: bool. Whether to apply causal attention mask.
-    - indices: (batch_size, seq_len_q, topk), torch.int32.
-        If not None, sparse attention will be enabled,
-        and only tokens in the `indices` array will be attended to.
-        Invalid indices should be set to -1 or numbers >= total_seq_len_kv.
-        For details about how to set up `indices`, please refer to README.md.
-
-    Returns:
-    - out: (batch_size, seq_len_q, num_heads_q, head_dim_v).
-    - softmax_lse: (batch_size, num_heads_q, seq_len_q), torch.float32.
-    """
-    s_kv = kv_c_and_k_pe_cache.shape[0] * kv_c_and_k_pe_cache.shape[1]
-    assert indices is not None
-    indices_valid = torch.logical_and(indices != -1, indices < s_kv)
-    # [s_q, h_kv, topk] -> [s_q, h_kv, 1]
-    indices_all_valid_per_q = indices_valid.all(dim=-1, keepdim=True)
-    return flash_mla_with_kvcache(
-        q,
-        kv_c_and_k_pe_cache,
-        block_table,
-        cache_seqlens,
-        head_dim_v,
-        tile_scheduler_metadata,
-        num_splits,
-        softmax_scale,
-        causal,
-        False,
-        indices,
-        indices_all_valid_per_q,
-    )
-
-
-def flash_mla_sparse_decode_v2(
+def flash_mla_sparse_decode_wrapper(
     q: torch.Tensor,
     k_cache: torch.Tensor,
     head_dim_v: int,
@@ -376,3 +219,50 @@ def flash_mla_sparse_decode_v2(
         indices_all_valid_per_q=None,  # unnecessary
         out=out,
     )
+
+
+#
+# TODO: Add fake functions
+#
+# @register_fake("_flashmla_C::get_mla_metadata")
+# def _get_mla_metadata_fake(....) -> Tuple[torch.Tensor, torch.Tensor]:
+#     return ....
+#
+# @register_fake("_flashmla_C::fwd_kvcache_mla")
+# def _fwd_kvcache_mla_fake(....) -> Tuple[torch.Tensor, torch.Tensor]:
+#     return ....
+#
+
+
+# Metax: torch_ref
+def torch_flash_mla_sparse_prefill(
+    q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor, sm_scale: float
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    import math
+
+    def log2sumexp2(a: torch.Tensor, dim: int) -> torch.Tensor:
+        return torch.logsumexp(a * math.log(2), dim=dim) * math.log2(math.e)
+
+    assert len(q.shape) == len(kv.shape) == 3  # b == 1
+    s_q, _, d_qk = q.shape
+    s_kv, _, _ = kv.shape
+
+    indices = indices[:, 0, :]  # [s_q, topk]
+    invalid_indices_mask = (indices < 0) | (indices >= s_kv)
+    qs = q[:, :, :].float()  # [s_q, h_q, d_qk]
+    kvs = kv[:, 0, :].float()  # [s_kv, d_qk]
+
+    _, topk = indices.shape
+
+    kvs = torch.index_select(
+        kvs, 0, indices.masked_fill(invalid_indices_mask, 0).flatten()
+    ).view(s_q, topk, d_qk)  # [s_q, topk, d_qk]
+    attn_score = qs @ kvs.transpose(1, 2)  # [s_q, h_q, topk]
+    attn_score.masked_fill_(invalid_indices_mask.unsqueeze(1), float("-inf"))
+    attn_score *= sm_scale * math.log2(math.e)
+    max_logits = torch.max(attn_score, dim=-1)[0]  # [s_q, h_q]
+    lse = log2sumexp2(attn_score, dim=-1)  # [s_q, h_q]
+    attn_score = torch.exp2(attn_score - lse.unsqueeze(-1))  # [s_q, h_q, topk]
+    result = attn_score @ kvs[:, :, :512]
+
+    return (result.to(torch.bfloat16), max_logits, lse)
