@@ -4,6 +4,9 @@
 
 import torch
 
+import vllm.envs as envs
+from vllm import _custom_ops as ops
+from vllm.compilation.breakable_cudagraph import eager_break_during_capture
 from vllm.forward_context import get_forward_context
 from vllm.logger import init_logger
 from vllm.platforms import current_platform
@@ -23,7 +26,6 @@ from vllm.v1.attention.ops.common import pack_seq_triton, unpack_seq_triton
 from vllm.v1.worker.workspace import current_workspace_manager
 from vllm.model_executor.layers.sparse_attn_indexer import kv_cache_as_quant_view
 
-import vllm.envs as envs
 
 from vllm_metax import _custom_ops as mx_ops
 
@@ -45,6 +47,7 @@ def _gather_workspace_shapes_int8(
     )
 
 
+@eager_break_during_capture
 def sparse_attn_indexer_int8(
     hidden_states: torch.Tensor,
     k_cache_prefix: LayerNameType,
@@ -177,7 +180,7 @@ def sparse_attn_indexer_int8(
                 chunk.token_start : chunk.token_end, :topk_tokens
             ]
 
-            torch.ops._C.top_k_per_row_prefill(
+            torch.ops.top_k_per_row_prefill(
                 logits,
                 chunk.cu_seqlen_ks,
                 chunk.cu_seqlen_ke,
@@ -248,7 +251,7 @@ def sparse_attn_indexer_int8(
                 attn_metadata_narrowed.max_seq_len,
             )
         else:
-            torch.ops._C.top_k_per_row_decode(
+            ops.top_k_per_row_decode(
                 logits,
                 next_n,
                 seq_lens,
