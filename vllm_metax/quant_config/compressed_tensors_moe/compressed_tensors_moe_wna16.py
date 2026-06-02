@@ -1,10 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 # 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
 import torch
-from vllm.model_executor.layers.fused_moe import FusedMoE
 
 from vllm.model_executor.layers.quantization.compressed_tensors.compressed_tensors_moe.compressed_tensors_moe_wna16 import (
     CompressedTensorsWNA16MoEMethod as vllm_ctm_wna16,
+)
+
+from vllm.model_executor.layers.fused_moe import (
+    RoutedExperts,
+    SharedExperts,
 )
 
 from vllm.model_executor.layers.quantization.compressed_tensors.compressed_tensors_moe.compressed_tensors_moe_wna16_marlin import (
@@ -49,10 +53,11 @@ class CompressedTensorsWNA16MoEMethod(vllm_ctm_wna16):
 
     def apply(
         self,
-        layer: FusedMoE,
+        layer: RoutedExperts,
         x: torch.Tensor,
         topk_weights: torch.Tensor,
         topk_ids: torch.Tensor,
+        shared_experts: SharedExperts | None,
         shared_experts_input: torch.Tensor | None,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         # here we use Metax's `fused_experts`

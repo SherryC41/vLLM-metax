@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
+import torch
+from typing import TYPE_CHECKING
+
 from vllm.model_executor.layers.fused_moe.layer import (
     UnquantizedFusedMoEMethod as vllm_UnquantizedFusedMoEMethod,
 )
-
-import torch
 
 import vllm.model_executor.layers.fused_moe.modular_kernel as mk
 from vllm.model_executor.layers.fused_moe.config import (
@@ -14,8 +15,14 @@ from vllm.model_executor.layers.fused_moe.config import (
 from vllm.model_executor.layers.fused_moe.oracle.unquantized import (
     UnquantizedMoeBackend,
 )
+from vllm.model_executor.layers.fused_moe.runner.shared_experts import (
+    SharedExperts,
+)
 
 from vllm_metax.utils.fused_moe import get_triton_experts_cls
+
+if TYPE_CHECKING:
+    from vllm.model_executor.layers.fused_moe import RoutedExperts
 
 
 def backend_to_kernel_cls(
@@ -68,10 +75,11 @@ class UnquantizedFusedMoEMethod(vllm_UnquantizedFusedMoEMethod):
 
     def forward_oot(
         self,
-        layer: "FusedMoE",  # type: ignore[name-defined] # noqa: F821
+        layer: "RoutedExperts",
         x: torch.Tensor,
         topk_weights: torch.Tensor,
         topk_ids: torch.Tensor,
+        shared_experts: SharedExperts | None,
         shared_experts_input: torch.Tensor | None,
     ) -> torch.Tensor:
         assert self.moe_kernel is not None
@@ -85,5 +93,6 @@ class UnquantizedFusedMoEMethod(vllm_UnquantizedFusedMoEMethod):
             apply_router_weight_on_input=layer.apply_router_weight_on_input,
             global_num_experts=layer.global_num_experts,
             expert_map=layer.expert_map,
+            shared_experts=shared_experts,
             shared_experts_input=shared_experts_input,
         )
