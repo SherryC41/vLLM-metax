@@ -805,6 +805,12 @@ class FlashMLASparseImpl(SparseMLAAttentionImpl[FlashMLASparseMetadata]):
         # Compute padded head count for decode
         return 64 if num_heads <= 64 else 128
 
+    @staticmethod
+    def _compute_bf16_decode_padded_heads(num_heads: int) -> int:
+        # BF16 decode kernel only supports h_q = 64 or 128
+        # Compute padded head count for decode
+        return 64 if num_heads <= 64 else 128
+
     def __init__(
         self,
         num_heads: int,
@@ -836,6 +842,9 @@ class FlashMLASparseImpl(SparseMLAAttentionImpl[FlashMLASparseMetadata]):
             128 if current_platform.is_device_capability_family(100) else 64
         )
         self.fp8_decode_padded_heads = self._compute_fp8_decode_padded_heads(num_heads)
+        self.bf16_decode_padded_heads = self._compute_bf16_decode_padded_heads(
+            num_heads
+        )
 
         vllm_config = get_current_vllm_config()
         max_tokens = vllm_config.scheduler_config.max_num_batched_tokens
@@ -1181,7 +1190,7 @@ class FlashMLASparseImpl(SparseMLAAttentionImpl[FlashMLASparseMetadata]):
         output = output[:, : self.num_heads, :]
         return output
 
-    # This used bf16 decode kernel which keep the same logic as _fp8_flash_mla_kernel_decode
+    # This used bf16 decode kernel which keep the same logic as _fp8_flash_mla_kernel
     def _bf16_flash_mla_kernel_with_kvcache(
         self,
         q: torch.Tensor,
