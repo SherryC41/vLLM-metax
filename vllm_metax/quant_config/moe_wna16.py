@@ -7,6 +7,10 @@ from vllm.model_executor.layers.fused_moe.layer import FusedMoE
 from vllm.model_executor.layers.fused_moe.activation import MoEActivation
 from vllm.model_executor.layers.linear import LinearBase, UnquantizedLinearMethod
 from vllm.model_executor.layers.quantization.base_config import QuantizeMethodBase
+from vllm.model_executor.layers.fused_moe import (
+    RoutedExperts,
+    SharedExperts,
+)
 from vllm.model_executor.layers.quantization.moe_wna16 import (
     MoeWNA16Config,
     is_layer_skipped_quant,
@@ -34,25 +38,25 @@ class MacaMoeWNA16Config(MoeWNA16Config):
         self, layer: torch.nn.Module, prefix: str
     ) -> "QuantizeMethodBase | None":
         if is_layer_skipped_quant(prefix, self.modules_to_not_convert):
-            if isinstance(layer, FusedMoE):
+            if isinstance(layer, RoutedExperts):
                 return UnquantizedFusedMoEMethod(layer.moe_config)
             return UnquantizedLinearMethod()
         elif isinstance(layer, LinearBase):
             # Avoid circular import
             from vllm_metax.quant_config.awq import MacaAWQConfig
-            from vllm_metax.quant_config.auto_gptq import MacaGPTQConfig
+            from vllm_metax.quant_config.auto_gptq import MacaAutoGPTQConfig
 
             if self.linear_quant_method == "gptq":
-                return MacaGPTQConfig.from_config(self.full_config).get_quant_method(
-                    layer, prefix
-                )
+                return MacaAutoGPTQConfig.from_config(
+                    self.full_config
+                ).get_quant_method(layer, prefix)
             elif self.linear_quant_method == "awq":
                 return MacaAWQConfig.from_config(self.full_config).get_quant_method(
                     layer, prefix
                 )
             else:
                 raise ValueError("moe_wna16 only support gptq and awq.")
-        elif isinstance(layer, FusedMoE):
+        elif isinstance(layer, RoutedExperts):
             return MoeWNA16Method(self, layer.moe_config)
         return None
 
@@ -67,6 +71,7 @@ class MoeWNA16Method(vllm_MoeWNA16Method):
         x: torch.Tensor,
         topk_weights: torch.Tensor,
         topk_ids: torch.Tensor,
+        shared_experts: SharedExperts | None,
         shared_experts_input: torch.Tensor | None,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         assert layer.activation == MoEActivation.SILU, (

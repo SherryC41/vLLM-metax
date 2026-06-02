@@ -18,8 +18,9 @@ from vllm_metax.customized.kernels import (
 )
 
 
+@register_quantization_config("auto_gptq")
 @register_quantization_config("gptq")
-class MacaGPTQConfig(AutoGPTQConfig):
+class MacaAutoGPTQConfig(AutoGPTQConfig):
     def get_supported_act_dtypes(cls) -> list[torch.dtype]:
         return [torch.half, torch.bfloat16]
 
