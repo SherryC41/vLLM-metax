@@ -115,14 +115,12 @@ function (get_torch_gpu_compiler_flags OUT_GPU_FLAGS GPU_LANG USE_MACA)
     if (CUDA_VERSION VERSION_GREATER_EQUAL 11.8)
       list(APPEND GPU_FLAGS "-DENABLE_FP8")
     endif()
-    if (CUDA_VERSION VERSION_GREATER_EQUAL 12.0)
+    if (USE_MACA)
       list(REMOVE_ITEM GPU_FLAGS
         "-D__CUDA_NO_HALF_OPERATORS__"
         "-D__CUDA_NO_HALF_CONVERSIONS__"
+        "-D__CUDA_NO_BFLOAT16_CONVERSIONS__"
         "-D__CUDA_NO_HALF2_OPERATORS__")
-      if (not USE_MACA)
-        list(REMOVE_ITEM GPU_FLAGS
-        "-D__CUDA_NO_BFLOAT16_CONVERSIONS__")
       endif()
     endif()
 
