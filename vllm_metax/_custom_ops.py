@@ -16,12 +16,40 @@
 # latest vllm/_custom_ops.py first to avoid adding duplicates.
 # ---------------------------------------------------
 
+from typing import TYPE_CHECKING
+
 import torch
 import vllm.envs as envs
 
+# Import upstream custom-op registrations first. MetaX overrides the GPTQ fake
+# impl below because the MetaX kernel exposes a different schema.
+import vllm._custom_ops as _vllm_custom_ops  # noqa: F401
 from vllm.platforms import current_platform
 
 current_platform.import_kernels()
+
+
+if TYPE_CHECKING:
+
+    def register_fake(name):
+        return lambda fn: fn
+else:
+    try:
+        from torch.library import register_fake
+    except ImportError:
+        from torch.library import impl_abstract as register_fake
+
+
+def _register_fake_impl(
+    op_name: str,
+    fake_impl,
+    *,
+    allow_override: bool = False,
+) -> None:
+    try:
+        register_fake(op_name, allow_override=allow_override)(fake_impl)
+    except TypeError:
+        register_fake(op_name)(fake_impl)
 
 
 def awq_gemm(
@@ -75,6 +103,34 @@ def gptq_gemm(
         perm_space,
         temp_space,
         dtype_bf16,
+    )
+
+
+if hasattr(torch.ops._C, "gptq_gemm"):
+
+    def _gptq_gemm_fake(
+        a: torch.Tensor,
+        b_q_weight: torch.Tensor,
+        b_gptq_qzeros: torch.Tensor,
+        b_gptq_scales: torch.Tensor,
+        b_g_idx: torch.Tensor,
+        use_exllama: bool,
+        bit: int,
+        group_size: int,
+        perm_space: torch.Tensor,
+        temp_space: torch.Tensor,
+        dtype_bf16: bool,
+    ) -> torch.Tensor:
+        return torch.empty(
+            (a.size(0), b_q_weight.size(1)), dtype=a.dtype, device=a.device
+        )
+
+    # Override the upstream vLLM fake impl: MetaX exposes a different
+    # gptq_gemm schema with extra workspace arguments.
+    _register_fake_impl(
+        "_C::gptq_gemm",
+        _gptq_gemm_fake,
+        allow_override=True,
     )
 
 

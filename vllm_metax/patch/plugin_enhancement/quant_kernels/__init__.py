@@ -6,6 +6,5 @@
 # Affected versions: v0.21.0
 # -----------------------------------------------
 from . import scaled_mm
-from . import mp_linear_kernel
 from . import fp8
 from . import int8
