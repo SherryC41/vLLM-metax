@@ -121,7 +121,6 @@ function (get_torch_gpu_compiler_flags OUT_GPU_FLAGS GPU_LANG USE_MACA)
         "-D__CUDA_NO_HALF_CONVERSIONS__"
         "-D__CUDA_NO_BFLOAT16_CONVERSIONS__"
         "-D__CUDA_NO_HALF2_OPERATORS__")
-      endif()
     endif()
 
   elseif(${GPU_LANG} STREQUAL "HIP")
