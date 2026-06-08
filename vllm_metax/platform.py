@@ -797,7 +797,6 @@ mx_envs.override_vllm_env(
     "set float32 matmul precision to high for better performance on Maca platform",
 )
 
-
 mx_envs.override_vllm_env(
     "VLLM_USE_V2_MODEL_RUNNER",
     False,
@@ -811,9 +810,3 @@ mx_envs.override_vllm_env(
 import vllm.utils.import_utils as iu
 
 iu.has_triton_kernels = lambda: False
-
-# --------------------------------------------------
-# Note: disable torchvision beta transforms warning
-import torchvision
-
-torchvision.disable_beta_transforms_warning()  # type: ignore

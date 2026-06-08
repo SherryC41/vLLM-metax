@@ -18,9 +18,6 @@ def register():
 
 ########### general plugins ###########
 def register_patch():
-    # Temporarily remove the torch fix in torch2.10
-    # import vllm_metax.patch.torch_fix.fix_compilation_backend  # noqa: F401
-    # import vllm_metax.patch.torch_fix.fix_standalone_compile  # noqa: F401
     import vllm_metax.patch  # noqa: F401
 
 
