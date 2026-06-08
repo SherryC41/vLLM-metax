@@ -797,6 +797,14 @@ mx_envs.override_vllm_env(
     "set float32 matmul precision to high for better performance on Maca platform",
 )
 
+
+mx_envs.override_vllm_env(
+    "VLLM_USE_V2_MODEL_RUNNER",
+    False,
+    "v2 model runner is still under development and not fully tested on Maca platform, disable it by default",
+)
+
+
 # --------------------------------------------------
 # Note: vllm_metax currently does not support third-party
 #       Triton kernels; Triton upgrade required.
