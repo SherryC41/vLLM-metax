@@ -35,7 +35,9 @@ try:
         python_create_and_map,
         python_unmap_and_release,
     )
-    from vllm_metax.patch.distributed.cuda_wrapper import CudaRTLibrary
+    from vllm_metax.patch.plugin_enhancement.distributed.cuda_wrapper import (
+        CudaRTLibrary,
+    )
 
     lib_name = find_loaded_library("cumem_allocator")
     libcudart = CudaRTLibrary()
