@@ -523,6 +523,11 @@ class FlashAttentionMetadataBuilder(AttentionMetadataBuilder[FlashAttentionMetad
                 dtype=torch.int32,
                 device=self.device,
             )
+            self._dcp_cu_seqlens_k = torch.zeros(
+                max_num_reqs + 1,
+                dtype=torch.int32,
+                device=self.device,
+            )
 
         # Sliding window size to be used with the AOT scheduler will be
         # populated on first build() call.
@@ -730,11 +735,16 @@ class FlashAttentionMetadataBuilder(AttentionMetadataBuilder[FlashAttentionMetad
             )
             # --------------------
             # For metax GQA DCP
-            cu_seqlens_k = F.pad(
+            # Keep K offsets in persistent storage so full cudagraph replay
+            # sees the runtime-updated DCP prefix sums.
+            self._dcp_cu_seqlens_k[: num_reqs + 1].zero_()
+            torch.cumsum(
                 dcp_context_kv_lens,
-                (1, 0),
-                value=0,
-            ).cumsum(dim=0, dtype=torch.int32)
+                dim=0,
+                dtype=torch.int32,
+                out=self._dcp_cu_seqlens_k[1 : num_reqs + 1],
+            )
+            cu_seqlens_k = self._dcp_cu_seqlens_k[: num_reqs + 1]
         elif use_cascade:
             cu_prefix_query_lens = torch.tensor(
                 [0, num_actual_tokens], dtype=torch.int32, device=self.device
