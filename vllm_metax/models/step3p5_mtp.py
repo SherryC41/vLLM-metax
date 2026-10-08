@@ -22,11 +22,15 @@ from vllm.model_executor.model_loader.mtp_validation import (
 from vllm.model_executor.model_loader.weight_utils import default_weight_loader
 from vllm.sequence import IntermediateTensors
 
-from vllm.model_executor.models.step3p5 import Step3p5DecoderLayer
 from vllm.model_executor.models.utils import (
     get_spec_layer_idx_from_weight_name,
     maybe_prefix,
 )
+
+# NOTE(MetaX): The draft layer must use the local Step3p5 decoder, which
+# forwards the SwiGLU limit required by MACA MoE experts. Recheck this import
+# if the upstream decoder adopts the same execution contract.
+from .step3p5 import Step3p5DecoderLayer
 
 logger = init_logger(__name__)
 
@@ -291,7 +295,6 @@ class Step3p5MTP(nn.Module):
         params_need_to_load = set(params_dict.keys())
         # Some KV cache scales are optional: checkpoints may omit them and vLLM
         # will fall back to default scales during initialization.
-
         optional_params = {
             name
             for name, param in params_dict.items()
@@ -299,6 +302,9 @@ class Step3p5MTP(nn.Module):
             and param.numel() == 1
             and not param.requires_grad
         }
+        # NOTE(MetaX): v0.30.0 Step3p5MTP.load_weights indexes the missing set
+        # when an optional cache scale was loaded. Check only truly missing
+        # weights; remove this when upstream applies the same set difference.
         missing_params = params_need_to_load - optional_params - loaded_params
         if missing_params and is_mtp_completeness_check_enabled():
             raise RuntimeError(
@@ -308,7 +314,7 @@ class Step3p5MTP(nn.Module):
             )
         return loaded_params
 
-    def _rewrite_spec_layer_name(self, spec_layer: int, name: str) -> str:
+    def _rewrite_spec_layer_name(self, spec_layer: int | None, name: str) -> str:
         """
         Rewrite the weight name to match the format of the original model.
         Add .mtp_block for modules in transformer layer block for spec layer
@@ -327,6 +333,7 @@ class Step3p5MTP(nn.Module):
                 break
         if not spec_layer_weight:
             # treat rest weights as weights for transformer layer block
+            assert spec_layer is not None
             name = name.replace(
                 f"model.layers.{spec_layer}.", f"model.layers.{spec_layer}.mtp_block."
             )
