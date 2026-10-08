@@ -85,8 +85,6 @@ from vllm.model_executor.layers.quantization.utils.quant_utils import (
 from vllm.model_executor.layers.rotary_embedding import get_rope
 from vllm.model_executor.layers.sparse_attn_indexer import (
     SparseAttnIndexer,
-)
-from vllm.model_executor.layers.sparse_attn_indexer import (
     fused_indexer_q_rope_quant,
 )
 from vllm.model_executor.layers.vocab_parallel_embedding import (
@@ -97,20 +95,6 @@ from vllm.model_executor.model_loader.weight_utils import (
     default_weight_loader,
     maybe_remap_kv_scale_name,
 )
-from vllm.model_executor.models.utils import (
-    AutoWeightsLoader,
-    extract_layer_index,
-    sequence_parallel_chunk,
-)
-from vllm.platforms import current_platform
-from vllm.sequence import IntermediateTensors
-from vllm.utils.torch_utils import direct_register_custom_op
-from vllm.v1.attention.backend import AttentionBackend, AttentionType
-from vllm_metax.v1.attention.backends.mla.indexer import (
-    MacaDeepseekV32IndexerBackend as DeepseekV32IndexerBackend,
-)
-from vllm.v1.kv_cache_interface import KVCacheSpec, MLAAttentionSpec
-
 from vllm.model_executor.models.interfaces import (
     MixtureOfExperts,
     SupportsEagle,
@@ -119,16 +103,34 @@ from vllm.model_executor.models.interfaces import (
     SupportsPP,
 )
 from vllm.model_executor.models.utils import (
+    AutoWeightsLoader,
     PPMissingLayer,
+    extract_layer_index,
     get_pp_missing_layer_names,
     get_spec_layer_idx_from_weight_name,
     is_pp_missing_parameter,
     make_empty_intermediate_tensors_factory,
     make_layers,
     maybe_prefix,
+    sequence_parallel_chunk,
 )
+from vllm.platforms import current_platform
+from vllm.sequence import IntermediateTensors
+from vllm.utils.torch_utils import direct_register_custom_op
+from vllm.v1.attention.backend import AttentionBackend, AttentionType
+from vllm.v1.attention.backends.mla.index_group import (
+    SparseMLAIndexGroupBuilder,
+    get_sparse_mla_index_group_max_rows,
+)
+from vllm.v1.kv_cache_interface import KVCacheSpec, MLAAttentionSpec, SparseCacheRole
 
 import vllm_metax.envs as mx_envs
+
+# NOTE(MetaX): The upstream indexer backend uses CUDA kernels. Keep the MACA
+# metadata builder until its kernel contract matches the upstream backend.
+from vllm_metax.v1.attention.backends.mla.indexer import (
+    MacaDeepseekV32IndexerBackend as DeepseekV32IndexerBackend,
+)
 
 logger = init_logger(__name__)
 
@@ -661,6 +663,7 @@ class DeepseekV32IndexerCache(torch.nn.Module, AttentionLayerBase):
             num_kv_heads=1,
             head_size=self.head_dim,
             dtype=self.dtype,
+            cache_role=SparseCacheRole.INDEXER,
         )  # Only has one vector instead of K + V
 
     def forward(self): ...
@@ -717,9 +720,9 @@ class Indexer(nn.Module):
         self.quant_block_size = 128  # TODO: get from config
         self.topk_indices_buffer = topk_indices_buffer
 
-        # NOTE: (zyongye) we use fp8 naive cache,
-        #       where we store value in fp8 and scale in fp32
-        #       per self.quant_block_size element
+        # NOTE(MetaX): Unlike upstream's always-FP8 indexer cache, MACA uses
+        # BF16 for "auto" because FP8 is optional here. Keep Q and K layouts
+        # paired; revisit when FP8 is supported on all target devices.
         assert cache_config is not None
         if vllm_config.attention_config.indexer_kv_dtype == "fp8":
             self.k_cache = DeepseekV32IndexerCache(
@@ -865,6 +868,8 @@ class Indexer(nn.Module):
         return self.indexer_op(hidden_states, q_input, k, weights)
 
 
+# NOTE(MetaX): Some MACA checkpoints store indexer WK in INT8. Dequantize it
+# into the same BF16 fused projection as FP8 WK; revisit if upstream supports it.
 def _try_load_fp8_int8_indexer_wk(
     name, tensor, buf, params_dict, loaded_params, pp_missing_layer_names
 ):
@@ -963,6 +968,8 @@ def _min_latency_fused_qkv_a_proj_fake(
     return input_.new_empty(input_.shape[0], weight.shape[0])
 
 
+# NOTE(MetaX): Use a distinct op name so the MACA and upstream model modules
+# can coexist in one process; remove when the upstream op is no longer loaded.
 direct_register_custom_op(
     op_name="mx_min_latency_fused_qkv_a_proj",
     op_func=_min_latency_fused_qkv_a_proj_impl,
@@ -1043,6 +1050,7 @@ class DeepseekV2MLAAttention(nn.Module):
         quant_config: QuantizationConfig | None = None,
         prefix: str = "",
         topk_indices_buffer: torch.Tensor | None = None,
+        index_group_builder: SparseMLAIndexGroupBuilder | None = None,
         input_size: int | None = None,
         reduce_results: bool = True,
         non_causal_multi_token_decode: bool = False,
@@ -1230,6 +1238,7 @@ class DeepseekV2MLAAttention(nn.Module):
             indexer_rotary_emb=self.indexer_rope_emb,
             is_sparse=self.is_v32,
             topk_indices_buffer=topk_indices_buffer,
+            index_group_builder=index_group_builder,
         )
 
         self.mla_attn = MultiHeadLatentAttentionWrapper(
@@ -1273,6 +1282,7 @@ class DeepseekV2DecoderLayer(nn.Module):
         prefix: str,
         config: DeepseekV2Config | None = None,
         topk_indices_buffer: torch.Tensor | None = None,
+        index_group_builder: SparseMLAIndexGroupBuilder | None = None,
     ) -> None:
         super().__init__()
 
@@ -1314,8 +1324,9 @@ class DeepseekV2DecoderLayer(nn.Module):
             and layer_idx >= config.first_k_dense_replace
             and layer_idx % moe_layer_freq == 0
         )
-        # JoyAI's MTP layer is dense; other 40-layer models may use MoE here.
-        # Source: https://www.modelscope.cn/models/jd-opensource/JoyAI-LLM-Flash
+        # NOTE(MetaX): JoyAI's MTP layer is dense; its model identity survives
+        # the speculative config rewrite via joyai_dense_mtp. Remove this
+        # exception when upstream handles that checkpoint's layer layout.
         is_joyai_dense_mtp = (
             (
                 config.model_type == "joyai_llm_flash"
@@ -1331,6 +1342,11 @@ class DeepseekV2DecoderLayer(nn.Module):
             parallel_config.use_sequence_parallel_moe
             and parallel_config.pipeline_parallel_size == 1
             and is_moe_layer
+        )
+        attn_kwargs = (
+            {"index_group_builder": index_group_builder}
+            if attn_cls is DeepseekV2MLAAttention
+            else {}
         )
         self.self_attn = attn_cls(
             vllm_config=vllm_config,
@@ -1348,6 +1364,7 @@ class DeepseekV2DecoderLayer(nn.Module):
             prefix=f"{prefix}.self_attn",
             topk_indices_buffer=topk_indices_buffer,
             reduce_results=not self.use_sequence_parallel_moe,
+            **attn_kwargs,
         )
 
         if is_moe_layer:
@@ -1471,6 +1488,14 @@ class DeepseekV2Model(nn.Module):
             )
         else:
             topk_indices_buffer = None
+        index_group_builder = (
+            SparseMLAIndexGroupBuilder(
+                topk_indices_buffer,
+                get_sparse_mla_index_group_max_rows(vllm_config),
+            )
+            if topk_indices_buffer is not None
+            else None
+        )
 
         if get_pp_group().is_first_rank:
             self.embed_tokens = VocabParallelEmbedding(
@@ -1487,6 +1512,7 @@ class DeepseekV2Model(nn.Module):
                 vllm_config=vllm_config,
                 prefix=prefix,
                 topk_indices_buffer=topk_indices_buffer,
+                index_group_builder=index_group_builder,
             ),
             prefix=f"{prefix}.layers",
         )
