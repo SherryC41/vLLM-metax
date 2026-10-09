@@ -25,7 +25,10 @@ from vllm.model_executor.layers.linear import (
 from vllm_metax.registry.custom_ops.layers.sparse_attn_indexer import (
     MacaSparseAttnIndexer,
 )
-from vllm.models.common.ops import fused_q_kv_rmsnorm
+from vllm.models.common.ops.fused_qk_rmsnorm import (
+    _FUSED_Q_KV_RMSNORM_KERNEL,
+    fused_q_kv_rmsnorm,
+)
 from vllm.models.deepseek_v4.common.ops import (
     fused_indexer_q_rope_quant,
 )
@@ -35,7 +38,6 @@ from vllm_metax.models.deepseek_v4.common.ops import (
 from vllm.models.deepseek_v4.common.ops.fused_indexer_q import MXFP4_BLOCK_SIZE
 
 if TYPE_CHECKING:
-    from vllm.models.deepseek_v4.eager_scratch import DeepseekV4EagerScratchPool
     from vllm_metax.v1.attention.backends.mla.sparse_swa import (
         DeepseekSparseSWAMetadata,
     )
@@ -54,6 +56,7 @@ from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.model_executor.models.utils import extract_layer_index
 from vllm.models.deepseek_v4.common.rope import build_deepseek_v4_rope
 from vllm_metax.models.deepseek_v4.compressor import MacaDeepseekCompressor
+from vllm.platforms import current_platform
 from vllm.triton_utils import tl, triton
 from vllm.utils.multi_stream_utils import (
     execute_in_parallel,
@@ -111,10 +114,15 @@ def _resolve_dsv4_kv_cache_dtype(
     """
     if use_fp8_ds_mla_layout:
         # fp8_ds_mla block format: UE8M0 block-scaled fp8 packed as uint8.
-        assert kv_cache_dtype.startswith("fp8"), (
-            f"DeepseekV4 fp8_ds_mla layout only supports fp8 kv-cache, "
-            f"got {kv_cache_dtype}"
-        )
+        if kv_cache_dtype == "auto":
+            kv_cache_dtype = "fp8"
+        if not kv_cache_dtype.startswith("fp8"):
+            raise ValueError(
+                "DeepseekV4 fp8_ds_mla layout only supports fp8 "
+                f"kv-cache, got {kv_cache_dtype}. Please set "
+                "`--kv-cache-dtype fp8` or select a backend that supports "
+                "bfloat16 KV cache."
+            )
         if kv_cache_dtype != "fp8_ds_mla":
             if cache_config is not None:
                 cache_config.cache_dtype = "fp8_ds_mla"
@@ -211,6 +219,13 @@ class MacaDeepseekV4Attention(nn.Module, AttentionLayerBase, ABC):
         self.n_groups = config.o_groups
         self.n_local_groups = self.n_groups // tp_size
         self.window_size = config.sliding_window
+        # Vision variant: image spans are visible bidirectionally, widening
+        # prefill SWA index rows by up to max_image_tokens columns.
+        self.max_image_tokens = (
+            getattr(config, "vision_max_n_token", 0)
+            if getattr(config, "vision_n_layers", 0) > 0
+            else 0
+        )
         # NOTE(zyongye) Compress ratio can't be 0
         # we do this for because MTP layer is not included
         # in the compress ratio list
@@ -360,6 +375,101 @@ class MacaDeepseekV4Attention(nn.Module, AttentionLayerBase, ABC):
                 k_cache_prefix=self.prefix,
             )
 
+        if vllm_config.kernel_config.enable_jit_warmup:
+            from vllm_metax.v1.attention.backends.mla.sparse_swa import (
+                _COMPUTE_PREFILL_METADATA_KERNEL,
+                _COMPUTE_SWA_INDICES_AND_LENS_KERNEL,
+            )
+
+            _COMPUTE_PREFILL_METADATA_KERNEL.register_warmup()
+            _COMPUTE_SWA_INDICES_AND_LENS_KERNEL.register_warmup(
+                window_size=self.window_size,
+                block_size=self.swa_cache_layer.block_size,
+                max_image_tokens=self.max_image_tokens,
+            )
+
+            if self.compress_ratio > 1:
+                from vllm.v1.attention.backends.mla.compressor_utils import (
+                    _COMPRESSED_SLOT_MAPPING_KERNEL,
+                )
+
+                _COMPRESSED_SLOT_MAPPING_KERNEL.register_warmup()
+
+            if self.indexer is not None:
+                from vllm_metax.v1.attention.backends.mla.indexer import (
+                    _BUILD_PREFILL_CHUNK_METADATA_KERNEL,
+                    _PREPARE_UNIFORM_DECODE_KERNEL,
+                )
+
+                _PREPARE_UNIFORM_DECODE_KERNEL.register_warmup()
+                _BUILD_PREFILL_CHUNK_METADATA_KERNEL.register_warmup()
+
+            spec_config = vllm_config.speculative_config
+            if spec_config is not None and spec_config.use_dspark():
+                from vllm_metax.v1.attention.backends.mla.sparse_swa import (
+                    _COMPUTE_DSPARK_NONCAUSAL_SWA_INDICES_KERNEL,
+                )
+
+                _COMPUTE_DSPARK_NONCAUSAL_SWA_INDICES_KERNEL.register_warmup(
+                    window_size=self.window_size,
+                    num_speculative_tokens=spec_config.num_speculative_tokens,
+                    block_size=self.swa_cache_layer.block_size,
+                )
+
+            if self.backend_cls.get_name() in (
+                "FLASHMLA_SPARSE_DSV4",
+                "ROCM_FLASHMLA_SPARSE_DSV4",
+                "XPU_V4_MLA_SPARSE",
+            ):
+                from vllm.models.deepseek_v4.common.ops.cache_utils import (
+                    _COMBINE_TOPK_SWA_INDICES_KERNEL,
+                )
+
+                _COMBINE_TOPK_SWA_INDICES_KERNEL.register_warmup()
+
+            from vllm.utils.import_utils import has_cutedsl
+
+            _FUSED_Q_KV_RMSNORM_KERNEL.register_warmup()
+
+            backend_name = self.backend_cls.get_name()
+            if current_platform.is_cuda():
+                from vllm.models.deepseek_v4.common.ops.fused_inv_rope_fp8_quant import (  # noqa: E501
+                    _FUSED_INV_ROPE_FP8_QUANT_KERNEL,
+                )
+
+                _FUSED_INV_ROPE_FP8_QUANT_KERNEL.register_warmup()
+
+                if self.compress_ratio == 128:
+                    from vllm.models.deepseek_v4.sparse_mla import (
+                        _BUILD_C128A_TOPK_METADATA_KERNEL,
+                    )
+
+                    _BUILD_C128A_TOPK_METADATA_KERNEL.register_warmup()
+
+                if backend_name == "FLASHMLA_SPARSE_DSV4":
+                    from vllm.models.deepseek_v4.common.ops.cache_utils import (
+                        _COMPUTE_GLOBAL_TOPK_INDICES_AND_LENS_KERNEL,
+                        _DEQUANTIZE_AND_GATHER_K_CACHE_KERNEL,
+                    )
+
+                    _COMPUTE_GLOBAL_TOPK_INDICES_AND_LENS_KERNEL.register_warmup()
+                    if has_cutedsl():
+                        from vllm.models.deepseek_v4.nvidia.ops.dequant_gather_k_cutedsl import (  # noqa: E501
+                            _DEQUANT_GATHER_K_CACHE_CUTEDSL_KERNEL,
+                        )
+
+                        _DEQUANT_GATHER_K_CACHE_CUTEDSL_KERNEL.register_warmup()
+                    else:
+                        _DEQUANTIZE_AND_GATHER_K_CACHE_KERNEL.register_warmup()
+                elif backend_name == "FLASHINFER_MLA_SPARSE_DSV4":
+                    from vllm.models.deepseek_v4.common.ops.cache_utils import (
+                        _BUILD_FLASHINFER_MIXED_SPARSE_INDICES_KERNEL,
+                        _COMPUTE_GLOBAL_TOPK_INDICES_AND_LENS_KERNEL,
+                    )
+
+                    _COMPUTE_GLOBAL_TOPK_INDICES_AND_LENS_KERNEL.register_warmup()
+                    _BUILD_FLASHINFER_MIXED_SPARSE_INDICES_KERNEL.register_warmup()
+
     def forward(
         self,
         positions: torch.Tensor,
@@ -480,7 +590,7 @@ class MacaDeepseekV4Attention(nn.Module, AttentionLayerBase, ABC):
 
         # Keep Q projection and KV insertion on the default stream. The indexer
         # and MLA compressor use aux streams 0 and 1; aux 2 is internal to the
-        # indexer. ROCm runs the same work sequentially without aux streams.
+        # indexer.
         if indexer is not None:
             assert compressor is not None
             q, (indexer_inputs, _) = execute_in_parallel(
@@ -567,7 +677,6 @@ class MacaDeepseekV4Attention(nn.Module, AttentionLayerBase, ABC):
         # fused_wqa_wkv (heaviest) on default; the three lighter input GEMMs
         # on aux streams 0..2 when their owning module exists. ln_events[0]
         # is the fan-out start event; ln_events[1..3] are per-aux done events.
-        # On ROCm, aux_streams is None and execute_in_parallel runs serially.
         aux_fns: list[Callable[[], Any] | None] = [None, None, None]
 
         if self.compressor is not None:
@@ -790,7 +899,7 @@ class MacaDeepseekV4IndexerCache(torch.nn.Module, AttentionLayerBase):
         self.kv_cache = kv_cache.squeeze(1)
 
     def get_kv_cache_spec(self, vllm_config: VllmConfig) -> KVCacheSpec:
-        # head_dim already carries the fp8 scale padding
+        # head_dim includes the indexer value and scale bytes.
         # tokens_per_state=1 for V3.2, >1 for DeepseekV4; same cache layout.
         uses_fp8_ds_mla_layout = vllm_config.cache_config.cache_dtype == "fp8_ds_mla"
         return MLAAttentionSpec(
@@ -800,7 +909,8 @@ class MacaDeepseekV4IndexerCache(torch.nn.Module, AttentionLayerBase):
             dtype=self.dtype,
             tokens_per_state=self.compress_ratio,
             # --------------------------------------
-            # Note(Metax): no alignment for indexer kvcache continuity
+            # NOTE(MetaX): No page alignment here. The pooled cache view can
+            # still have a physical block stride larger than its logical page.
             # alignment=576,
         )
 
@@ -835,12 +945,45 @@ class MacaDeepseekV4Indexer(nn.Module):
         self.rope_dim = config.qk_rope_head_dim  # 64
         self.q_lora_rank = q_lora_rank  # 1536
         self.compress_ratio = compress_ratio
-        self.use_fp4_kv = self.vllm_config.attention_config.use_fp4_indexer_cache
-        self.use_fp8_kv = vllm_config.attention_config.indexer_kv_dtype == "fp8"
+        # NOTE(MetaX): v0.30.0 removed use_fp4_indexer_cache. This MACA V4
+        # indexer stores INT8 by default, with FP8 only when explicitly chosen;
+        # its FP4 cache path is not implemented. Revisit when the local FP4
+        # compressor and sparse indexer share a supported cache layout.
+        kv_dtype = vllm_config.attention_config.indexer_kv_dtype
+        if kv_dtype not in ("auto", "fp8"):
+            raise ValueError(
+                f"MetaX DeepSeek V4 indexer does not support indexer_kv_dtype={kv_dtype!r}; "
+                "use 'auto' (INT8) or 'fp8'."
+            )
+        # NOTE(MetaX): The FP8 sparse-indexer op is gated by this flag as well
+        # as device capability; reject the opt-in before model construction.
+        if kv_dtype == "fp8" and not (
+            current_platform.supports_fp8() and mx_envs.VLLM_METAX_SUPPORTS_FP8
+        ):
+            raise ValueError(
+                "MetaX DeepSeek V4 FP8 indexer requires enabled FP8 support."
+            )
+        self.use_fp4_kv = False
+        self.use_fp8_kv = kv_dtype == "fp8"
         logger.info_once(
             "Using %s indexer cache for Lightning Indexer.",
-            "MXFP4" if self.use_fp4_kv else "INT8",
+            "FP8" if self.use_fp8_kv else "INT8",
         )
+        if vllm_config.kernel_config.enable_jit_warmup:
+            from vllm.utils.import_utils import has_cutedsl
+
+            if current_platform.is_cuda() and has_cutedsl():
+                from vllm.models.deepseek_v4.nvidia.ops.fused_indexer_q_cutedsl import (  # noqa: E501
+                    _INDEXER_Q_FP8_KERNEL,
+                    _INDEXER_Q_MXFP4_KERNEL,
+                )
+
+                indexer_q_kernel = (
+                    _INDEXER_Q_MXFP4_KERNEL
+                    if self.use_fp4_kv
+                    else _INDEXER_Q_FP8_KERNEL
+                )
+                indexer_q_kernel.register_warmup()
 
         # no tensor parallel, just replicated
         self.wq_b = ReplicatedLinear(
@@ -859,7 +1002,7 @@ class MacaDeepseekV4Indexer(nn.Module):
         )
         self.softmax_scale = self.head_dim**-0.5
 
-        self.scale_fmt = "int8"
+        self.scale_fmt = "ue8m0" if self.use_fp8_kv else "int8"
         self.quant_block_size = 128  # TODO: get from config
         self.topk_indices_buffer = topk_indices_buffer
 
@@ -925,15 +1068,31 @@ class MacaDeepseekV4Indexer(nn.Module):
             torch.cuda.Event(),
         ]
 
+        if vllm_config.kernel_config.enable_jit_warmup:
+            from vllm.utils.import_utils import has_cutedsl
+
+            if not has_cutedsl() and not current_platform.is_xpu():
+                from vllm.models.deepseek_v4.common.ops.fused_indexer_q import (
+                    _FUSED_INDEXER_Q_ROPE_MXFP4_TRITON_KERNEL,
+                    _FUSED_INDEXER_Q_ROPE_QUANT_TRITON_KERNEL,
+                )
+
+                (
+                    _FUSED_INDEXER_Q_ROPE_MXFP4_TRITON_KERNEL
+                    if self.use_fp4_kv
+                    else _FUSED_INDEXER_Q_ROPE_QUANT_TRITON_KERNEL
+                ).register_warmup()
+
     def forward(
         self,
         hidden_states: torch.Tensor,
         qr: torch.Tensor,
-        compressed_kv_score: torch.Tensor,
+        compressed_kv_score: torch.Tensor | None,
         indexer_weights: torch.Tensor,
         positions: torch.Tensor,
         rotary_emb: nn.Module,
         qr_scale: torch.Tensor | None = None,
+        skip_compressor: bool = False,
     ) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
         compressor = self.compressor
 
@@ -946,7 +1105,8 @@ class MacaDeepseekV4Indexer(nn.Module):
             ):
                 # candidates num smaller than topk, every candidate is selected
                 # but we still need to build k cache
-                compressor(compressed_kv_score, positions, rotary_emb)
+                if not skip_compressor:
+                    compressor(compressed_kv_score, positions, rotary_emb)
                 assert self.topk_indices_buffer is not None
                 num_tokens = (
                     indexer_metadata.num_decode_tokens
@@ -988,15 +1148,18 @@ class MacaDeepseekV4Indexer(nn.Module):
                     self.n_head**-0.5,
                 )
 
-        # compressor returns None and writes K to the indexer KV cache; the
-        # join orders that write before indexer_op (skip_k_cache_insert=True).
-        (q_quant, weights), _ = maybe_execute_in_parallel(
-            wq_b_and_q_quant,
-            lambda: compressor(compressed_kv_score, positions, rotary_emb),
-            self.ln_events[0],
-            self.ln_events[1],
-            self.aux_stream,
-        )
+        if not skip_compressor:
+            # compressor returns None and writes K to the indexer KV cache; the
+            # join orders that write before indexer_op (skip_k_cache_insert=True).
+            (q_quant, weights), _ = maybe_execute_in_parallel(
+                wq_b_and_q_quant,
+                lambda: compressor(compressed_kv_score, positions, rotary_emb),
+                self.ln_events[0],
+                self.ln_events[1],
+                self.aux_stream,
+            )
+        else:
+            q_quant, weights = wq_b_and_q_quant()
         if isinstance(q_quant, tuple):
             q, q_scale = q_quant
         else:

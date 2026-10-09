@@ -9,6 +9,14 @@ def register_model():
         "DeepSeekMTPModel", "vllm_metax.models.deepseek_mtp:DeepSeekMTP"
     )
 
+    # NOTE(MetaX): v0.30.0 selects the generic DeepSeek MTP for V3.2 on
+    # non-CUDA platforms. Keep the MetaX subclass so its sparse indexer and
+    # cache implementation match the local V3.2 target model. Revisit when
+    # the upstream generic decoder uses those MetaX kernels directly.
+    ModelRegistry.register_model(
+        "DeepseekV32MTPModel", "vllm_metax.models.deepseek_mtp:DeepSeekMTP"
+    )
+
     ModelRegistry.register_model(
         "DeepseekV2ForCausalLM", "vllm_metax.models.deepseek_v2:DeepseekV2ForCausalLM"
     )

@@ -6,7 +6,15 @@ from vllm.triton_utils import tl, triton
 
 
 # -- fused_kv_compress_norm_rope_insert_indexer_attn_int8 --
-@triton.jit
+@triton.jit(
+    do_not_specialize=[
+        "state_cache_stride0",
+        "state_cache_stride1",
+        "block_table_stride",
+        "rms_norm_eps",
+        "cos_sin_stride",
+    ]
+)
 def _fused_kv_compress_norm_rope_insert_indexer_attn_int8(
     # ── state cache (compressor internal state) ──
     state_cache_ptr,
