@@ -31,19 +31,23 @@ from vllm.model_executor.model_loader.weight_utils import (
     default_weight_loader,
     maybe_remap_kv_scale_name,
 )
+from vllm.model_executor.models.interfaces import SupportsPP
+from vllm.model_executor.models.utils import (
+    get_pp_missing_layer_names,
+    get_spec_layer_idx_from_weight_name,
+    make_empty_intermediate_tensors_factory,
+    maybe_prefix,
+)
 from vllm.platforms import current_platform
 from vllm.sequence import IntermediateTensors
 
+# NOTE(MetaX): Keep the draft block bound to the MACA decoder and its
+# BF16/INT8 indexer loader; the generic upstream decoder uses CUDA paths.
 from .deepseek_v2 import (
     DeepseekV2DecoderLayer,
     DeepseekV2MixtureOfExperts,
     DeepseekV2MoE,
     _try_load_fp8_int8_indexer_wk,
-)
-from vllm.model_executor.models.utils import (
-    get_pp_missing_layer_names,
-    get_spec_layer_idx_from_weight_name,
-    maybe_prefix,
 )
 
 
@@ -231,7 +235,7 @@ class DeepSeekMultiTokenPredictor(nn.Module):
 
 
 @support_torch_compile
-class DeepSeekMTP(nn.Module, DeepseekV2MixtureOfExperts):
+class DeepSeekMTP(nn.Module, DeepseekV2MixtureOfExperts, SupportsPP):
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__()
         self.config = vllm_config.model_config.hf_config
@@ -241,6 +245,9 @@ class DeepSeekMTP(nn.Module, DeepseekV2MixtureOfExperts):
         )
         # Set MoE hyperparameters
         self.set_moe_parameters()
+        self.make_empty_intermediate_tensors = make_empty_intermediate_tensors_factory(
+            ["hidden_states", "residual"], self.config.hidden_size
+        )
 
     def set_moe_parameters(self):
         self.num_moe_layers = self.config.num_nextn_predict_layers
@@ -267,7 +274,7 @@ class DeepSeekMTP(nn.Module, DeepseekV2MixtureOfExperts):
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.model.embed_input_ids(input_ids)
 
-    def forward(
+    def forward(  # type: ignore[override]
         self,
         input_ids: torch.Tensor | None,
         positions: torch.Tensor,
@@ -329,6 +336,15 @@ class DeepSeekMTP(nn.Module, DeepseekV2MixtureOfExperts):
                 continue
             spec_layer = get_spec_layer_idx_from_weight_name(self.config, name)
             if spec_layer is None:
+                # A tied top-level embed_tokens has no spec layer to rewrite
+                # from; the draft needs its own copy under PP.
+                param = params_dict.get(name) if "embed_tokens" in name else None
+                if param is not None:
+                    weight_loader = getattr(
+                        param, "weight_loader", default_weight_loader
+                    )
+                    weight_loader(param, loaded_weight)
+                    loaded_params.add(name)
                 continue
             is_fusion_moe_shared_experts_layer = (
                 self.is_fused_shared_expert_enabled and ("mlp.shared_experts" in name)
