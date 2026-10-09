@@ -30,11 +30,47 @@ investigate, not proof of support on MetaX.
   requested specialist workflow only to its relevant portion. No monkey-patch headers
   or patch audit files are required for model adaptations.
 
+## Diff the source and audit the upgrade range first
+
+- Identify the last upstream version represented by the local models and the
+  confirmed target revision. Before editing, diff **each** local model file
+  against its exact target-upstream counterpart, including explicit mappings
+  between platform directories. Inspect target-only, local-only, changed and
+  removed files; a matching class name does not establish matching behavior.
+- Review every upstream commit in the version range that touches those model
+  files. Read the patch for each commit, then inspect any other production
+  modules changed by that commit and the model's direct callers/dependencies.
+  Decide whether the behavior is inherited from `vllm`, needs a MetaX merge,
+  needs a coordinated dependency change, is intentionally platform-specific,
+  or belongs to a new unsupported architecture. Do not infer the answer from a
+  commit title or from the final two-tree diff alone.
+- Keep a compact file/commit disposition record with the affected interface,
+  dependent MetaX symbols, chosen action and evidence. Include commits that
+  require no local edit, so a missed upstream change remains visible. Recheck
+  the complete local-vs-target diff after edits for unaccounted differences.
+- When this skill runs before other MetaX upgrade skills, treat the confirmed
+  target `vllm` source as the reliable API contract. A referenced MetaX module
+  may still raise import or attribute errors because its own upgrade is pending.
+  Record that boundary, continue source comparison and isolated checks, and do
+  not misclassify the unrelated failure as a model regression. Still adapt a
+  dependency when the requested model's changed logic requires it.
+
 ## First establish the MACA/upstream differences
 
 Before deciding what to copy or remove, build an evidence-backed difference matrix
 for each requested model family. Include the effective configuration after platform
 and speculative-decoding rewrites, not only the original HF config.
+
+- Inspect the official `config.json` for the exact checkpoint variant and revision
+  before reasoning about its layer layout. Record backbone and MTP/draft counts
+  separately, count layer-indexed arrays (for example `layer_types`, `rope_theta`,
+  `partial_rotary_factors`), and map zero-based checkpoint layer IDs to each part.
+  Do not substitute config-class defaults or mistake the highest layer ID for the
+  number of layers. If the official config is unavailable, state the evidence gap.
+- Verify which config class the target vLLM actually loads and compare the raw
+  checkpoint values with the constructed config after overrides and rewrites.
+  Check whether constructors truncate or transform layer-indexed arrays before
+  model and MTP code indexes them.
 
 | Contract | Record for both upstream and MACA |
 | --- | --- |
