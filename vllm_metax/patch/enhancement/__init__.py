@@ -22,3 +22,4 @@ from . import joyai_support  # noqa: F401
 from . import utils  # noqa: F401
 
 from . import dbo  # noqa: F401
+from . import deepseek_v41_support  # noqa: F401

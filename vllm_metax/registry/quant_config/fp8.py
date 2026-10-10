@@ -39,10 +39,10 @@ from vllm.model_executor.layers.quantization import register_quantization_config
 from vllm.model_executor.layers.quantization.fp8 import (
     Fp8Config,
     Fp8KVCacheMethod,
-    Fp8LinearMethod,
+    Fp8LinearMethod as vllm_Fp8LinearMethod,
     Fp8MoEMethod as vllm_Fp8MoEMethod,
 )
-
+from vllm.model_executor.layers.linear import register_weight_loader_v2_supported_method
 
 logger = init_logger(__name__)
 
@@ -69,7 +69,7 @@ class MacaFp8Config(Fp8Config):
                 online_method.marlin_input_dtype = get_marlin_input_dtype(prefix)
                 return online_method
             else:
-                offline_method = Fp8LinearMethod(self)
+                offline_method = vllm_Fp8LinearMethod(self)
                 offline_method.marlin_input_dtype = get_marlin_input_dtype(prefix)
                 return offline_method
         elif isinstance(layer, RoutedExperts):
@@ -200,3 +200,25 @@ class Fp8MoEMethod(vllm_Fp8MoEMethod):
             experts_cls=self.experts_cls,
             routing_tables=layer._expert_routing_tables(),
         )
+
+
+@register_weight_loader_v2_supported_method
+class MctlassFp8LinearMethod(vllm_Fp8LinearMethod):
+    """Keep V4.1's weight_scale name with the standard block-FP8 loader."""
+
+    def create_weights(self, layer, *args, **kwargs):
+        weight_loader = kwargs["weight_loader"]
+
+        def load_weight(param, loaded_weight, *loader_args, **loader_kwargs):
+            if param.dtype == torch.float8_e8m0fnu:
+                if loaded_weight.dtype not in (torch.uint8, torch.float8_e8m0fnu):
+                    raise ValueError("Expected UE8M0 checkpoint scales")
+                # Both checkpoint representations contain the same exponent bytes.
+                loaded_weight = loaded_weight.view(param.dtype)
+            return weight_loader(param, loaded_weight, *loader_args, **loader_kwargs)
+
+        kwargs["weight_loader"] = load_weight
+        super().create_weights(layer, *args, **kwargs)
+        scale = layer.weight_scale_inv
+        del layer.weight_scale_inv
+        layer.register_parameter("weight_scale", scale)

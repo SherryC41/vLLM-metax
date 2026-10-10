@@ -9,4 +9,6 @@ from . import (
     moe_wna16,  # noqa: F401
     compressed_tensors_moe,  # noqa: F401
     fp8,  # noqa: F401
+    deepseek_fp8,  # noqa: F401
+    mxfp4,  # noqa: F401
 )

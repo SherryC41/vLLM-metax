@@ -25,6 +25,7 @@ if current_platform.supports_fp8():
 from vllm.utils.torch_utils import (
     _encode_layer_name,
 )
+from vllm.utils.import_utils import has_cutedsl
 
 logger = init_logger(__name__)
 
@@ -44,6 +45,9 @@ class MacaSparseAttnIndexer(SparseAttnIndexer):
         skip_k_cache_insert: bool = False,
         use_fp4_cache: bool = False,
         compress_ratio: int = 1,
+        candidate_blocks: torch.Tensor | None = None,
+        candidate_block_size: int = 0,
+        candidate_write: bool = False,
     ):
         super(SparseAttnIndexer, self).__init__(enforce_enable=True)
         self.k_cache = k_cache
@@ -57,11 +61,18 @@ class MacaSparseAttnIndexer(SparseAttnIndexer):
         self.skip_k_cache_insert = skip_k_cache_insert
         self.use_fp4_cache = use_fp4_cache
         self.compress_ratio = compress_ratio
+        # v4.1 two-level selection: the candidate source indexer writes the
+        # top candidate blocks here; later indexers mask their scores with it.
+        self.candidate_blocks = candidate_blocks
+        self.candidate_block_size = candidate_block_size
+        self.candidate_write = candidate_write
         self.dense_mha_metadata_layer_name = ""
         # DCP scalars are constant for the run; resolve them here (config is set
         # during model construction) and pass them into the custom op, rather
         # than threading them through per-step metadata.
-        parallel_config = get_current_vllm_config().parallel_config
+        vllm_config = get_current_vllm_config()
+        parallel_config = vllm_config.parallel_config
+        self.topk_backend = vllm_config.kernel_config.sparse_indexer_topk_backend
         self._parallel_config = parallel_config
         self.dcp_world_size = parallel_config.decode_context_parallel_size
         self.dcp_rank = get_dcp_group().rank_in_group if self.dcp_world_size > 1 else 0
@@ -72,6 +83,28 @@ class MacaSparseAttnIndexer(SparseAttnIndexer):
                 "Sparse Attention Indexer CUDA op requires DeepGEMM support in "
                 "the current vLLM environment."
             )
+
+        if vllm_config.kernel_config.enable_jit_warmup:
+            from vllm.v1.attention.ops.common import (
+                _PACK_SEQ_TRITON_KERNEL,
+                _UNPACK_SEQ_TRITON_KERNEL,
+            )
+
+            pack_dtype = torch.uint8 if use_fp4_cache else current_platform.fp8_dtype()
+            _PACK_SEQ_TRITON_KERNEL.register_warmup(
+                dtype=pack_dtype,
+                pad_value=0 if use_fp4_cache else -float("inf"),
+            )
+            _UNPACK_SEQ_TRITON_KERNEL.register_warmup()
+
+            if self.dcp_world_size > 1 and current_platform.is_cuda() and has_cutedsl():
+                from vllm.model_executor.kernels.attention.dsa.dcp_indexer_cutedsl import (  # noqa: E501
+                    _PACK_DCP_TOPK_CANDIDATES_KERNEL,
+                    _STABLE_TOPK_FROM_GATHERED_CANDIDATES_KERNEL,
+                )
+
+                _PACK_DCP_TOPK_CANDIDATES_KERNEL.register_warmup()
+                _STABLE_TOPK_FROM_GATHERED_CANDIDATES_KERNEL.register_warmup()
 
     def forward_oot(
         self,
@@ -122,4 +155,9 @@ class MacaSparseAttnIndexer(SparseAttnIndexer):
             self.dcp_rank,
             self.dcp_world_size,
             self.cp_kv_cache_interleave_size,
+            False,
+            candidate_blocks=self.candidate_blocks,
+            candidate_block_size=self.candidate_block_size,
+            candidate_write=self.candidate_write,
+            topk_backend=self.topk_backend,
         )

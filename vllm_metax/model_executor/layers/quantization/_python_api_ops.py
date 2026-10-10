@@ -381,11 +381,22 @@ def mctlass_fp8_block_scaled_mm(
     As: torch.Tensor,
     Bs: torch.Tensor,
     out_dtype: torch.dtype,
+    group_size: int = 128,
 ) -> torch.Tensor:
     M = A.shape[0]
     N = B.shape[0]
     K = B.shape[1]
     C = torch.zeros((M, N), dtype=out_dtype, device=A.device)
+    if group_size not in (32, 128):
+        raise ValueError(f"Unsupported FP8 group_size: {group_size}")
+    if group_size == 32:
+        if As.dtype != torch.float32 or Bs.dtype != torch.float32:
+            raise ValueError("Block-32 scales must be FP32")
+        if K % 32 or As.shape != (M, K // 32):
+            raise ValueError("Expected A_scale shape [M, K/32]")
+        if Bs.shape != ((N + 31) // 32, K // 32):
+            raise ValueError("Expected B_scale shape [ceil(N/32), K/32]")
+
     scale_a_trans = As.T.contiguous()
     scale_b_trans = Bs.T.contiguous()
     assert mctlass_scaled_gemm is not None, "mctlass scale op is not imported correctly"
@@ -403,6 +414,7 @@ def mctlass_fp8_block_scaled_mm(
         is_scale_b_1d=False,
         scale_a_layout="m-major",
         scale_b_layout="n-major",
+        group_size=group_size,
     )
     return C
 
@@ -413,6 +425,7 @@ def mctlass_fp8_block_scaled_mm_fake(
     As: torch.Tensor,
     Bs: torch.Tensor,
     out_dtype: torch.dtype,
+    group_size: int = 128,
 ) -> torch.Tensor:
     M = A.shape[0]
     N = B.shape[0]
@@ -608,6 +621,92 @@ direct_register_custom_op(
 )
 
 
+# w4a8 fused_moe pergroup 32
+
+
+def mctlassEx_fused_moe_w4a8_gemm_group32(
+    a: torch.Tensor,
+    b: torch.Tensor,
+    c: torch.Tensor,
+    a_scales: torch.Tensor,
+    b_scales: torch.Tensor,
+    topk_weights: torch.Tensor,
+    token_ids: torch.Tensor,
+    expert_ids: torch.Tensor,
+    num_tokens_post_padded: torch.Tensor,
+    num_experts: int,
+    batch_size: int,
+    N: int,
+    K: int,
+    num_valid_tokens: int,
+    EM: int,
+    topk: int,
+    mul_routed_weight: bool,
+    group_size: int,
+) -> torch.Tensor:
+    assert mctlass_moe_gemm is not None, "mctlassMoeGEMM is not imported correctly"
+    mctlass_moe_gemm(
+        batch_size,
+        N,
+        K,
+        num_experts,
+        EM,
+        topk,
+        a,
+        b,
+        c,
+        a_scales,
+        b_scales,
+        None,
+        topk_weights,
+        token_ids,
+        expert_ids,
+        num_tokens_post_padded,
+        mul_routed_weight,
+        is_blockwise=True,
+        group_size=group_size,
+        is_scale_a_1d=True,
+        is_scale_b_1d=True,
+    )
+    return c
+
+
+def mctlassEx_fused_moe_w4a8_gemm_group32_fake(
+    a: torch.Tensor,
+    b: torch.Tensor,
+    c: torch.Tensor,
+    a_scales: torch.Tensor,
+    b_scales: torch.Tensor,
+    topk_weights: torch.Tensor,
+    token_ids: torch.Tensor,
+    expert_ids: torch.Tensor,
+    num_tokens_post_padded: torch.Tensor,
+    num_experts: int,
+    batch_size: int,
+    N: int,
+    K: int,
+    num_valid_tokens: int,
+    EM: int,
+    topk: int,
+    mul_routed_weight: bool,
+    group_size: int,
+) -> torch.Tensor:
+    return c
+
+
+direct_register_custom_op(
+    op_name="mctlassEx_fused_moe_w4a8_gemm_group32",
+    op_func=mctlassEx_fused_moe_w4a8_gemm_group32,
+    mutates_args=["c"],
+    fake_impl=mctlassEx_fused_moe_w4a8_gemm_group32_fake,
+    tags=(
+        ()
+        if is_torch_equal_or_newer("2.7.0")
+        else (torch.Tag.needs_fixed_stride_order,)
+    ),
+)
+
+
 def cutlass_moe_w4a8_gemm(
     a: torch.Tensor,
     b: torch.Tensor,
@@ -628,7 +727,12 @@ def cutlass_moe_w4a8_gemm(
     mul_routed_weight: bool,
     group_size: int,
 ) -> torch.Tensor:
-    return torch.ops.vllm.mctlassEx_fused_moe_w4a8_gemm(
+    if group_size == 32:
+        kernel = torch.ops.vllm.mctlassEx_fused_moe_w4a8_gemm_group32
+    else:
+        kernel = torch.ops.vllm.mctlassEx_fused_moe_w4a8_gemm
+
+    return kernel(
         a,
         b,
         c,
@@ -877,8 +981,11 @@ def cutlass_fp8_block_scaled_mm(
     scale_a: torch.Tensor,
     scale_b: torch.Tensor,
     out_dtype: torch.dtype,
+    group_size: int = 128,
 ) -> torch.Tensor:
-    return torch.ops.vllm.mctlass_fp8_block_scaled_mm(a, b, scale_a, scale_b, out_dtype)
+    return torch.ops.vllm.mctlass_fp8_block_scaled_mm(
+        a, b, scale_a, scale_b, out_dtype, group_size
+    )
 
 
 # -------------------------------------------------
@@ -1121,4 +1228,187 @@ def cutlass_moe_mm_w4a16(
         mul_routed_weight=mul_routed_weight,
         group_size=group_size,
         b_zp=b_zp,
+    )
+
+
+def mctlassEx_fused_moe_mxfp4_w4a16_get_kernel_m(
+    a: torch.Tensor,
+    b: torch.Tensor,
+    c: torch.Tensor,
+    num_experts: int,
+    batch_size: int,
+    N: int,
+    K: int,
+    topk: int,
+) -> int:
+    c1 = c.view(-1, c.size(-1))
+    assert c1.is_contiguous(), "fused moe output buffer is not contiguous"
+    assert mctlass_moe_gemm is not None, "mctlass op is not imported correctly"
+    return mctlass_moe_gemm.get_kernel_m(
+        a,
+        b,
+        c1,
+        num_experts,
+        batch_size,
+        N,
+        K,
+        topk,
+        is_blockwise=True,
+        group_size=32,
+        is_scale_ue8m0=True,
+        is_b_e2m1fp4x2=True,
+    )
+
+
+def mctlassEx_fused_moe_mxfp4_w4a16_gemm(
+    batch_size: int,
+    N: int,
+    K: int,
+    num_experts: int,
+    EM: int,
+    topk: int,
+    a: torch.Tensor,
+    b: torch.Tensor,
+    c: torch.Tensor,
+    a_scales: torch.Tensor | None,
+    b_scales: torch.Tensor,
+    b_bias: torch.Tensor | None,
+    topk_weights: torch.Tensor,
+    token_ids: torch.Tensor,
+    expert_ids: torch.Tensor,
+    num_tokens_post_padded: torch.Tensor,
+    mul_routed_weight: bool,
+    group_size: int,
+) -> torch.Tensor:
+    c1 = c.view(-1, c.size(-1))
+    assert c1.is_contiguous(), "fused moe output buffer is not contiguous"
+    assert mctlass_moe_gemm is not None, "mctlass op is not imported correctly"
+    assert a_scales is None
+    scales_b_trans = b_scales.transpose(1, 2).contiguous()
+    mctlass_moe_gemm(
+        batch_size,
+        N,
+        K,
+        num_experts,
+        EM,
+        topk,
+        a,
+        b,
+        c1,
+        a_scales,
+        scales_b_trans,
+        b_bias,
+        topk_weights,
+        token_ids,
+        expert_ids,
+        num_tokens_post_padded,
+        mul_routed_weight,
+        is_blockwise=True,
+        group_size=group_size,
+        filter_expert=True,
+        use_fp8=True,
+        is_scale_a_1d=True,
+        is_scale_b_1d=True,
+        scale_b_layout="n-major",
+        is_scale_ue8m0=True,
+        is_b_e2m1fp4x2=True,
+    )
+    return c1.reshape(c.shape)
+
+
+def mctlassEx_fused_moe_mxfp4_w4a16_gemm_fake(
+    batch_size: int,
+    N: int,
+    K: int,
+    num_experts: int,
+    EM: int,
+    topk: int,
+    a: torch.Tensor,
+    b: torch.Tensor,
+    c: torch.Tensor,
+    a_scales: torch.Tensor | None,
+    b_scales: torch.Tensor,
+    b_bias: torch.Tensor | None,
+    topk_weights: torch.Tensor,
+    token_ids: torch.Tensor,
+    expert_ids: torch.Tensor,
+    num_tokens_post_padded: torch.Tensor,
+    mul_routed_weight: bool,
+    group_size: int,
+) -> torch.Tensor:
+    return c
+
+
+direct_register_custom_op(
+    op_name="mctlassEx_fused_moe_mxfp4_w4a16_gemm",
+    op_func=mctlassEx_fused_moe_mxfp4_w4a16_gemm,
+    mutates_args=["c"],
+    fake_impl=mctlassEx_fused_moe_mxfp4_w4a16_gemm_fake,
+    tags=(
+        ()
+        if is_torch_equal_or_newer("2.7.0")
+        else (torch.Tag.needs_fixed_stride_order,)
+    ),
+)
+
+
+def cutlass_moe_mm_mxfp4_w4a16_get_kernel_m(
+    a: torch.Tensor,
+    b: torch.Tensor,
+    c: torch.Tensor,
+    K: int,
+    topk: int,
+) -> int:
+    batch_size = a.size(0)
+    num_experts, N, _ = b.size()
+
+    return mctlassEx_fused_moe_mxfp4_w4a16_get_kernel_m(
+        a=a,
+        b=b.view(dtype=torch.quint4x2),
+        c=c,
+        num_experts=num_experts,
+        batch_size=batch_size,
+        N=N,
+        K=K,
+        topk=topk,
+    )
+
+
+def cutlass_moe_mm_mxfp4_w4a16(
+    a: torch.Tensor,
+    b: torch.Tensor,
+    c: torch.Tensor,
+    b_scales: torch.Tensor,
+    topk_weights: torch.Tensor,
+    token_ids: torch.Tensor,
+    expert_ids: torch.Tensor,
+    num_tokens_post_padded: torch.Tensor,
+    topk: int,
+    mul_routed_weight: bool,
+    group_size: int,
+) -> torch.Tensor:
+    batch_size = a.size(0)
+    K = a.size(1)
+    num_experts, N, _ = b.size()
+    EM = token_ids.size(0)
+
+    return torch.ops.vllm.mctlassEx_fused_moe_mxfp4_w4a16_gemm(
+        batch_size=batch_size,
+        N=N,
+        K=K,
+        num_experts=num_experts,
+        EM=EM,
+        topk=topk,
+        a=a,
+        b=b.view(dtype=torch.quint4x2),
+        c=c,
+        a_scales=None,
+        b_scales=b_scales,
+        b_bias=None,
+        topk_weights=topk_weights,
+        token_ids=token_ids,
+        expert_ids=expert_ids,
+        num_tokens_post_padded=num_tokens_post_padded,
+        mul_routed_weight=mul_routed_weight,
+        group_size=group_size,
     )

@@ -12,3 +12,4 @@
 # -----------------------------------------------------------------------------
 
 from . import fp8_block_kernel  # noqa: F401
+from . import mxfp8_kernel  # noqa: F401

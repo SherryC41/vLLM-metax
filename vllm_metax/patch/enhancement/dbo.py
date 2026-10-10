@@ -18,7 +18,7 @@ from vllm.platforms import current_platform
 from vllm.utils.platform_utils import num_compute_units
 
 
-@patch("vllm.v1.worker.gpu_ubatch_wrapper", "SMControlContextManager.__init__")
+@patch("vllm.v1.worker.ubatch_utils", "SMControlContextManager.__init__")
 def __init__(
     self,
     comm_sms: int,

@@ -174,7 +174,7 @@ def mhc_pre_big_fuse_tilelang(
     pre_mix_out: T.Tensor[[num_tokens, hc_mult], T.float32]  # type: ignore[no-redef, valid-type]
     aux_out: T.Tensor[[num_tokens, hidden_size], T.bfloat16]  # type: ignore[no-redef, valid-type]
 
-    with T.Kernel(num_tokens, threads=96) as i:
+    with T.Kernel(num_tokens, threads=128) as i:
         if ENABLE_PDL:
             T.pdl_sync()
         ##################################################################
@@ -194,7 +194,7 @@ def mhc_pre_big_fuse_tilelang(
         mixes_shared = T.alloc_shared(hc_mult3, T.float32)
         T.copy(mixes, mixes_shared)
 
-        if T.get_thread_binding() < 32:
+        if T.get_thread_binding() < 64:
             ##################################################################
             # _pre_split_mixes_fwd (post & comb)
             cm = T.alloc_fragment((hc_mult, hc_mult), T.float32)
@@ -354,7 +354,7 @@ def mhc_pre_big_fuse_with_norm_tilelang(
     pre_mix_out: T.Tensor[[num_tokens, hc_mult], T.float32]  # type: ignore[no-redef, valid-type]
     aux_out: T.Tensor[[num_tokens, hidden_size], T.bfloat16]  # type: ignore[no-redef, valid-type]
 
-    with T.Kernel(num_tokens, threads=96) as i:
+    with T.Kernel(num_tokens, threads=128) as i:
         rms = T.alloc_fragment(1, T.float32)
         mixes = T.alloc_fragment(hc_mult3, T.float32)
         T.clear(mixes)
@@ -374,7 +374,7 @@ def mhc_pre_big_fuse_with_norm_tilelang(
         mixes_shared = T.alloc_shared(hc_mult3, T.float32)
         T.copy(mixes, mixes_shared)
 
-        if T.get_thread_binding() < 32:
+        if T.get_thread_binding() < 64:
             cm = T.alloc_fragment((hc_mult, hc_mult), T.float32)
             for j in T.Parallel(hc_mult):
                 if save_pre_mix:
@@ -548,7 +548,7 @@ def mhc_pre_big_fuse_broadcast_with_norm_tilelang(
     layer_input: T.Tensor[[num_tokens, hidden_size], T.bfloat16]  # type: ignore[no-redef, valid-type]
     norm_weight: T.Tensor[[hidden_size], T.bfloat16]  # type: ignore[no-redef, valid-type]
 
-    with T.Kernel(num_tokens, threads=96) as i:
+    with T.Kernel(num_tokens, threads=128) as i:
         rms = T.alloc_fragment(1, T.float32)
         mixes = T.alloc_fragment(hc_mult3, T.float32)
         T.clear(mixes)
@@ -569,7 +569,7 @@ def mhc_pre_big_fuse_broadcast_with_norm_tilelang(
         mixes_shared = T.alloc_shared(hc_mult3, T.float32)
         T.copy(mixes, mixes_shared)
 
-        if T.get_thread_binding() < 32:
+        if T.get_thread_binding() < 64:
             cm = T.alloc_fragment((hc_mult, hc_mult), T.float32)
             for j in T.Parallel(hc_mult):
                 post_mix[i, j] = (

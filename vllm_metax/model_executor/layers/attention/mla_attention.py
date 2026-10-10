@@ -1119,12 +1119,27 @@ class MLAAttention(nn.Module, AttentionLayerBase):
                     query_start_loc = attn_metadata.query_start_loc[
                         : attn_metadata.num_decodes + 1
                     ]
-                attn_out = self.dcp_manager.combine(
-                    attn_out,
-                    lse,
-                    seq_lens=seq_lens,
-                    query_start_loc=query_start_loc,
-                )
+                # Sparse PCP+DCP prefills already attend gathered KV and
+                # have rank-local queries. Only rows with LSE need a merge.
+                num_merge_rows = lse.shape[0]
+                assert num_merge_rows <= attn_out.shape[0]
+                if num_merge_rows == attn_out.shape[0] and num_merge_rows > 0:
+                    attn_out = self.dcp_manager.combine(
+                        attn_out,
+                        lse,
+                        seq_lens=seq_lens,
+                        query_start_loc=query_start_loc,
+                    )
+                elif num_merge_rows > 0:
+                    assert self.use_pcp
+                    attn_out[:num_merge_rows] = self.dcp_manager.combine(
+                        attn_out[:num_merge_rows],
+                        lse,
+                        seq_lens=seq_lens[: attn_metadata.num_decodes],
+                        query_start_loc=query_start_loc[
+                            : attn_metadata.num_decodes + 1
+                        ],
+                    )
                 if self.use_pcp:
                     attn_out = finalize_mla_pcp_decode(attn_out, self.num_heads)
 

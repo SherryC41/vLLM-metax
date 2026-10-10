@@ -17,7 +17,6 @@ import torch
 import vllm.envs as envs
 from vllm.utils.import_utils import has_deep_gemm
 from vllm.utils.deep_gemm import _import_deep_gemm, is_deep_gemm_supported, logger
-import vllm_metax.envs as mx_envs
 
 
 class DeepGemmQuantScaleFMT(Enum):
@@ -315,7 +314,7 @@ def int8_mqa_logits(
         cu_seqlen_ks,
         cu_seqlen_ke,
         clean_logits,
-        backend="triton" if mx_envs.VLLM_METAX_SUPPORTS_FP8 else "tilelang",
+        backend="tilelang",
     )
 
 
@@ -497,7 +496,8 @@ def int8_paged_mqa_logits(
     block_tables: torch.Tensor,
     schedule_metadata: torch.Tensor,
     max_model_len: int,
-    clean_logits: bool = True,
+    clean_logits: bool,
+    indices: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Compute INT8 MQA logits using a block-segregated paged KV cache.
 
@@ -578,7 +578,7 @@ def tf32_hc_prenorm_gemm(
         out,
         sqrsum,
         num_split,
-        backend="torch" if mx_envs.VLLM_METAX_SUPPORTS_FP8 else "mctlassEx",
+        backend="mctlassEx",
     )
 
 
@@ -636,6 +636,7 @@ def fp8_paged_mqa_logits(
     schedule_metadata: torch.Tensor,
     max_model_len: int,
     clean_logits: bool,
+    indices: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Compute MQA logits using a paged KV-cache.
 

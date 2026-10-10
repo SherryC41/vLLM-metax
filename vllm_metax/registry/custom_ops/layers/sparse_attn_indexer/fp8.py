@@ -10,7 +10,6 @@ from vllm.compilation.breakable_cudagraph import eager_break_during_capture
 from vllm.config import CUDAGraphMode
 from vllm.distributed import get_pcp_group
 from vllm.forward_context import get_forward_context
-from vllm.logger import init_logger
 from vllm.platforms import current_platform
 
 from vllm_metax.utils.deep_gemm import (
@@ -35,11 +34,17 @@ from vllm.model_executor.layers.sparse_attn_indexer import (
     _merge_dcp_topk_global,
 )
 
-from vllm_metax import _custom_ops as mx_ops
-
-logger = init_logger(__name__)
-
-RADIX_TOPK_WORKSPACE_SIZE = 1024 * 1024
+from vllm.model_executor.kernels.attention.dsa.candidate_blocks import (
+    apply_candidate_mask as _apply_candidate_mask,
+)
+from vllm.model_executor.kernels.attention.dsa.candidate_blocks import (
+    select_candidate_blocks as _select_candidate_blocks,
+)
+from vllm.model_executor.layers.sparse_attn_indexer import dcp_gather_kv_rows
+from vllm.model_executor.layers.indexer_topk import (
+    RADIX_TOPK_WORKSPACE_SIZE,
+    get_indexer_topk,
+)
 
 
 @eager_break_during_capture
@@ -66,6 +71,10 @@ def sparse_attn_indexer(
     dcp_world_size: int = 1,
     cp_kv_cache_interleave_size: int = 1,
     skip_topk_buffer_clear: bool = False,
+    candidate_blocks: torch.Tensor | None = None,
+    candidate_block_size: int = 0,
+    candidate_write: bool = False,
+    topk_backend: str = "auto",
 ) -> torch.Tensor:
     # careful! this will be None in dummy run
     forward_context = get_forward_context()
@@ -73,17 +82,33 @@ def sparse_attn_indexer(
     fp8_dtype = current_platform.fp8_dtype()
     k_cache_prefix = _resolve_layer_name(k_cache_prefix)
 
+    if candidate_blocks is not None:
+        # Candidate blocks are request-local; the DCP-sharded logits layout
+        # would need per-rank translation that is not implemented.
+        assert dcp_world_size == 1, (
+            "v4.1 two-level candidate filtering is not supported with DCP."
+        )
+        assert candidate_block_size > 0
+
     # assert isinstance(attn_metadata, dict)
     if not isinstance(attn_metadata, dict):
         # Reserve workspace for indexer during profiling run
         values_spec, scales_spec = _gather_workspace_shapes(
             total_seq_lens, head_dim, fp8_dtype, use_fp4_cache
         )
-        current_workspace_manager().get_simultaneous(
+        profile_specs: list[tuple[tuple[int, ...], torch.dtype]] = [
             values_spec,
             scales_spec,
             ((RADIX_TOPK_WORKSPACE_SIZE,), torch.uint8),
-        )
+        ]
+        if use_pcp and dcp_world_size > 1:
+            # The PCP+DCP path takes an all-gather destination and a
+            # de-interleaved result.
+            gather_spec = _gather_workspace_shapes(
+                total_seq_lens, head_dim, fp8_dtype, use_fp4_cache
+            )
+            profile_specs.extend(gather_spec * 2)
+        current_workspace_manager().get_simultaneous(*profile_specs)
 
         # Dummy allocation to simulate for peak logits tensor memory during inference.
         # FP8 elements so elements == bytes
@@ -111,6 +136,9 @@ def sparse_attn_indexer(
             use_pcp,
             dense_mha_metadata_layer_name,
             use_fp4_cache,
+            candidate_blocks=candidate_blocks,
+            candidate_block_size=candidate_block_size,
+            candidate_write=candidate_write,
         )
     attn_metadata_narrowed = attn_metadata[k_cache_prefix]
     assert isinstance(attn_metadata_narrowed, DeepseekV32IndexerMetadata)
@@ -131,9 +159,10 @@ def sparse_attn_indexer(
     # out-of-bounds reads in the kernel.
     # Keep PCP padding so every rank contributes the same all-gather shape.
     num_tokens = slot_mapping.shape[0]
-    if use_pcp:
-        num_tokens //= get_pcp_group().world_size
     if k is not None:
+        # MTP draft decodes are replicated and use an unexpanded slot mapping.
+        if use_pcp and num_tokens > k.shape[0]:
+            num_tokens //= get_pcp_group().world_size
         k = k[:num_tokens]
 
     if not skip_k_cache_insert:
@@ -147,14 +176,13 @@ def sparse_attn_indexer(
         # scale_fmt can be None, but the function expects str
         assert scale_fmt is not None
         assert not use_fp4_cache, "Unfused FP4 Insert is not supported yet"
-        mx_ops.indexer_k_quant_and_cache(
+        ops.indexer_k_quant_and_cache(
             k,
             kv_cache,
             slot_mapping_for_cache,
             quant_block_size,
             scale_fmt,
         )
-
     # The indexer and main MLA may classify the same short extend differently
     # because they use independent decode thresholds. Only the main MLA route
     # can determine whether the top-k indices will be consumed.
@@ -192,9 +220,27 @@ def sparse_attn_indexer(
         values_spec, scales_spec = _gather_workspace_shapes(
             total_seq_lens, head_dim, fp8_dtype, use_fp4_cache
         )
-        k_quant_full, k_scale_full = workspace_manager.get_simultaneous(
+        # PCP + DCP needs two more pairs: the rank-major all-gather destination
+        # and the de-interleaved result.
+        pcp_chunks = [
+            (c, c.pcp_deinterleave_idx)
+            for c in prefill_metadata.chunks
+            if c.pcp_deinterleave_idx is not None
+        ]
+        gather_specs: list[tuple[tuple[int, int], torch.dtype]] = []
+        if pcp_chunks:
+            gathered_rows = max(
+                dcp_world_size * c.local_total_seq_lens for c, _ in pcp_chunks
+            )
+            deinterleaved_rows = max(idx.shape[0] for _, idx in pcp_chunks)
+            for rows in (gathered_rows, deinterleaved_rows):
+                gather_specs.extend(
+                    _gather_workspace_shapes(rows, head_dim, fp8_dtype, use_fp4_cache)
+                )
+        k_quant_full, k_scale_full, *gather_bufs = workspace_manager.get_simultaneous(
             values_spec,
             scales_spec,
+            *gather_specs,
         )
         for chunk in prefill_metadata.chunks:
             cu_seqlen_ks = chunk.cu_seqlen_ks
@@ -203,12 +249,29 @@ def sparse_attn_indexer(
             k_quant = k_quant_full[: chunk.max_local_total_seq_lens]
             k_scale = k_scale_full[: chunk.max_local_total_seq_lens]
             if not chunk.skip_kv_gather and chunk.local_total_seq_lens > 0:
-                mx_ops.cp_gather_indexer_k_quant_cache(
+                ops.cp_gather_indexer_k_quant_cache(
                     kv_cache,
                     k_quant,
                     k_scale,
                     chunk.block_table,
                     chunk.local_cu_seq_lens,
+                )
+
+            # PCP + DCP KV all-gather.
+            deinterleave_idx = chunk.pcp_deinterleave_idx
+            if deinterleave_idx is not None:
+                # local_total_seq_lens is the PCP-padded extent here, so every
+                # rank contributes an identically shaped shard.
+                gathered_values, gathered_scales, out_values, out_scales = gather_bufs
+                shard = k_quant[: chunk.local_total_seq_lens]
+                k_quant = dcp_gather_kv_rows(
+                    shard, deinterleave_idx, gathered_values, out_values
+                )
+                k_scale = dcp_gather_kv_rows(
+                    k_scale[: chunk.local_total_seq_lens],
+                    deinterleave_idx,
+                    gathered_scales,
+                    out_scales,
                 )
 
             q_slice = q_quant[chunk.token_start : chunk.token_end]
@@ -221,7 +284,7 @@ def sparse_attn_indexer(
                 chunk.token_start : chunk.token_end, :topk_tokens
             ]
 
-            if chunk.local_total_seq_lens == 0:
+            if chunk.local_total_seq_lens == 0 or q_slice.shape[0] == 0:
                 logits = q_slice.new_empty((q_slice.shape[0], 0), dtype=torch.float32)
                 topk_indices.fill_(-1)
             else:
@@ -246,6 +309,30 @@ def sparse_attn_indexer(
                     clean_logits=False,
                 )
                 num_rows = logits.shape[0]
+                if candidate_blocks is not None:
+                    # Two-level selection (v4.1): the candidate source
+                    # publishes its top blocks; later indexers mask their
+                    # scores to them. Both before the row top-k.
+                    chunk_candidates = candidate_blocks[
+                        chunk.token_start : chunk.token_end
+                    ]
+                    if candidate_write:
+                        _select_candidate_blocks(
+                            logits,
+                            cu_seqlen_ks,
+                            cu_seqlen_ke,
+                            chunk_candidates.shape[1],
+                            candidate_block_size,
+                            chunk_candidates,
+                        )
+                    else:
+                        _apply_candidate_mask(
+                            logits,
+                            cu_seqlen_ks,
+                            cu_seqlen_ke,
+                            chunk_candidates,
+                            candidate_block_size,
+                        )
                 ops.top_k_per_row_prefill(
                     logits,
                     cu_seqlen_ks,
@@ -257,15 +344,18 @@ def sparse_attn_indexer(
                     topk_tokens,
                 )
 
-            _merge_dcp_topk_global(
-                logits,
-                topk_indices,
-                topk_tokens,
-                dcp_rank,
-                dcp_world_size,
-                cp_kv_cache_interleave_size,
-                row_starts=chunk.cu_seqlen_ks,
-            )
+            if deinterleave_idx is None:
+                # Under the PCP path the top-k already ran over the whole
+                # context.
+                _merge_dcp_topk_global(
+                    logits,
+                    topk_indices,
+                    topk_tokens,
+                    dcp_rank,
+                    dcp_world_size,
+                    cp_kv_cache_interleave_size,
+                    row_starts=chunk.cu_seqlen_ks,
+                )
 
     if has_decode:
         decode_metadata = attn_metadata_narrowed.decode
@@ -300,7 +390,7 @@ def sparse_attn_indexer(
                 padded_q_quant_decode_tokens = pack_seq_triton(
                     q_quant[:num_decode_tokens], decode_lens
                 )
-                padded_q_scale = None  # noqa: F841
+                padded_q_scale = None
         else:
             padded_q_quant_decode_tokens = q_quant[:num_decode_tokens].reshape(
                 decode_lens.shape[0], -1, *q_quant.shape[1:]
@@ -335,60 +425,49 @@ def sparse_attn_indexer(
             decode_metadata.schedule_metadata,
             max_model_len=max_model_len,
             clean_logits=False,
+            indices=decode_metadata.indices,
         )
         num_rows = logits.shape[0]
+        if candidate_blocks is not None:
+            # Two-level selection (v4.1) on the decode logits; columns are
+            # request-local compressed positions. seq_lens is (B, next_n)
+            # for native spec decode (per-row effective lens) and (B, 1)
+            # otherwise.
+            vis = seq_lens.reshape(-1)
+            row_repeat = next_n if vis.numel() != num_rows else 1
+            vis = vis[:num_rows]
+            decode_candidates = candidate_blocks[:num_rows]
+            if candidate_write:
+                _select_candidate_blocks(
+                    logits,
+                    None,
+                    vis,
+                    decode_candidates.shape[1],
+                    candidate_block_size,
+                    decode_candidates,
+                    row_repeat,
+                )
+            else:
+                _apply_candidate_mask(
+                    logits,
+                    None,
+                    vis,
+                    decode_candidates,
+                    candidate_block_size,
+                    row_repeat,
+                )
         topk_indices = topk_indices_buffer[:num_padded_tokens, :topk_tokens]
 
-        # TODO(hank): mcoplib does not support cooerative_topk
-        use_cooperative_topk = (
-            not current_platform.is_maca()
-            and topk_tokens in (512, 1024, 2048)
-            and num_rows <= 64
-            and logits.stride(0) % 4 == 0  # TMA 16-byte alignment
+        # The backend comes from the layer (config is only readable at model
+        # construction); dispatchers are cached per backend.
+        get_indexer_topk(topk_backend)(
+            logits,
+            seq_lens,
+            next_n,
+            topk_indices,
+            topk_tokens,
+            attn_metadata_narrowed.max_seq_len,
         )
-        # TODO(hank): mcoplib bugs in persistent_topk, disable it for now
-        use_persistent_topk = not current_platform.is_maca() and topk_tokens in (
-            512,
-            1024,
-            2048,
-        )
-        if use_cooperative_topk:
-            workspace_manager = current_workspace_manager()
-            (topk_workspace,) = workspace_manager.get_simultaneous(
-                ((RADIX_TOPK_WORKSPACE_SIZE,), torch.uint8),
-            )
-            torch.ops._C.cooperative_topk(
-                logits,
-                seq_lens,
-                topk_indices,
-                topk_workspace,
-                topk_tokens,
-                attn_metadata_narrowed.max_seq_len,
-            )
-        elif use_persistent_topk:
-            workspace_manager = current_workspace_manager()
-            (topk_workspace,) = workspace_manager.get_simultaneous(
-                ((RADIX_TOPK_WORKSPACE_SIZE,), torch.uint8),
-            )
-            torch.ops._C.persistent_topk(
-                logits,
-                seq_lens,
-                topk_indices,
-                topk_workspace,
-                topk_tokens,
-                logits.shape[1],
-            )
-        else:
-            ops.top_k_per_row_decode(
-                logits,
-                next_n,
-                seq_lens,
-                topk_indices,
-                num_rows,
-                logits.stride(0),
-                logits.stride(1),
-                topk_tokens,
-            )
 
         if decode_metadata.global_seq_lens is not None:
             _merge_dcp_topk_global(
@@ -437,6 +516,10 @@ def sparse_attn_indexer_fake(
     dcp_world_size: int = 1,
     cp_kv_cache_interleave_size: int = 1,
     skip_topk_buffer_clear: bool = False,
+    candidate_blocks: torch.Tensor | None = None,
+    candidate_block_size: int = 0,
+    candidate_write: bool = False,
+    topk_backend: str = "auto",
 ) -> torch.Tensor:
     return topk_indices_buffer
 
@@ -444,7 +527,7 @@ def sparse_attn_indexer_fake(
 direct_register_custom_op(
     op_name="mx_sparse_attn_indexer",
     op_func=sparse_attn_indexer,
-    mutates_args=["topk_indices_buffer"],
+    mutates_args=["topk_indices_buffer", "candidate_blocks"],
     fake_impl=sparse_attn_indexer_fake,
     dispatch_key=current_platform.dispatch_key,
 )

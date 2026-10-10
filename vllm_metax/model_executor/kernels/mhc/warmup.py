@@ -93,7 +93,7 @@ class MHCPreNormKernel(VllmJitKernel["MHCPreNormKernel.CompileKey"]):
             n_splits=tensors[0].shape[0],
             **fields,
         )
-        if not current_platform.is_cuda():
+        if not current_platform.is_maca():
             return self.kernel(*tensors, **asdict(compile_key))
         return self._get_or_compile(compile_key)(*tensors)
 

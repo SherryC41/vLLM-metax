@@ -267,7 +267,7 @@ class TritonExperts(LoRAExpertsMixin, mk.FusedMoEExpertsModular):
         apply_router_weight_on_input: bool,
     ):
         # Check constraints.
-        if self.quant_config.use_int4_w4a16:
+        if self.quant_config.use_int4_w4a16 or self.quant_config.use_mxfp4_w4a16:
             assert hidden_states.size(-1) // 2 == w1.size(2), "Hidden size mismatch"
         elif self.quant_config.use_int4_w4a8:
             # 8bit activation and int4 packed weight
@@ -320,6 +320,7 @@ class TritonExperts(LoRAExpertsMixin, mk.FusedMoEExpertsModular):
         config_dtype = get_config_dtype_str(
             dtype=hidden_states.dtype,
             use_int4_w4a16=self.quant_config.use_int4_w4a16,
+            use_mxfp4_w4a16=self.quant_config.use_mxfp4_w4a16,
             use_int4_w4a8=self.quant_config.use_int4_w4a8,
             use_int8_w8a8=self.quant_config.use_int8_w8a8,
             use_int8_w8a16=self.quant_config.use_int8_w8a16,
@@ -382,6 +383,7 @@ class TritonExperts(LoRAExpertsMixin, mk.FusedMoEExpertsModular):
                 use_int8_w8a16=self.quant_config.use_int8_w8a16,
                 use_int4_w4a8=self.quant_config.use_int4_w4a8,
                 use_int4_w4a16=self.quant_config.use_int4_w4a16,
+                use_mxfp4_w4a16=self.quant_config.use_mxfp4_w4a16,
             )
 
         # Ensure correctness when SPLIT_K>1 (atomic_add path).
@@ -399,6 +401,7 @@ class TritonExperts(LoRAExpertsMixin, mk.FusedMoEExpertsModular):
                 use_fp8_w8a8=self.quant_config.use_fp8_w8a8,
                 use_int8_w8a16=self.quant_config.use_int8_w8a16,
                 use_int4_w4a16=self.quant_config.use_int4_w4a16,
+                use_mxfp4_w4a16=self.quant_config.use_mxfp4_w4a16,
                 use_int8_w8a8=self.quant_config.use_int8_w8a8,
                 use_int4_w4a8=self.quant_config.use_int4_w4a8,
                 block_shape=self.block_shape,
@@ -477,6 +480,7 @@ class TritonExperts(LoRAExpertsMixin, mk.FusedMoEExpertsModular):
                 use_int8_w8a16=self.quant_config.use_int8_w8a16,
                 use_int4_w4a8=self.quant_config.use_int4_w4a8,
                 use_int4_w4a16=self.quant_config.use_int4_w4a16,
+                use_mxfp4_w4a16=self.quant_config.use_mxfp4_w4a16,
                 per_channel_quant=self.per_act_token_quant,
                 block_shape=self.block_shape,
                 B_bias=self.w1_bias,
@@ -584,6 +588,7 @@ class TritonExperts(LoRAExpertsMixin, mk.FusedMoEExpertsModular):
                     use_fp8_w8a8=self.quant_config.use_fp8_w8a8,
                     use_int8_w8a16=self.quant_config.use_int8_w8a16,
                     use_int4_w4a16=self.quant_config.use_int4_w4a16,
+                    use_mxfp4_w4a16=self.quant_config.use_mxfp4_w4a16,
                     use_int8_w8a8=self.quant_config.use_int8_w8a8,
                     use_int4_w4a8=self.quant_config.use_int4_w4a8,
                     block_shape=self.block_shape,
@@ -631,6 +636,7 @@ class TritonExperts(LoRAExpertsMixin, mk.FusedMoEExpertsModular):
                 use_int8_w8a16=self.quant_config.use_int8_w8a16,
                 use_int4_w4a8=self.quant_config.use_int4_w4a8,
                 use_int4_w4a16=self.quant_config.use_int4_w4a16,
+                use_mxfp4_w4a16=self.quant_config.use_mxfp4_w4a16,
                 per_channel_quant=self.per_act_token_quant,
                 block_shape=self.block_shape,
                 B_bias=self.w2_bias,
@@ -786,6 +792,7 @@ class TritonWNA16Experts(TritonExperts):
         config_dtype = get_config_dtype_str(
             dtype=hidden_states.dtype,
             use_int4_w4a16=self.quant_config.use_int4_w4a16,
+            use_mxfp4_w4a16=self.quant_config.use_mxfp4_w4a16,
             use_int4_w4a8=self.quant_config.use_int4_w4a8,
             use_int8_w8a8=self.quant_config.use_int8_w8a8,
             use_int8_w8a16=self.quant_config.use_int8_w8a16,

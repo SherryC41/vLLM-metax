@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
 # 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
-from enum import Enum
 import torch
 
 import vllm.model_executor.layers.fused_moe.modular_kernel as mk
@@ -14,20 +13,12 @@ from vllm.model_executor.layers.quantization.utils.quant_utils import (
     QuantKey,
 )
 from vllm.model_executor.layers.fused_moe.oracle.fp8 import (
+    Fp8MoeBackend,
     logger,
 )
-
 from vllm_metax.model_executor.layers.fused_moe.all2all_utils import (
     maybe_make_prepare_finalize,
 )
-
-
-class Fp8MoeBackend(Enum):
-    NONE = "NONE"
-    DEEPGEMM = "DEEPGEMM"
-    BATCHED_DEEPGEMM = "BATCHED_DEEPGEMM"
-    TRITON = "TRITON"
-    BATCHED_TRITON = "BATCHED_TRITON"
 
 
 def _get_priority_backends(
