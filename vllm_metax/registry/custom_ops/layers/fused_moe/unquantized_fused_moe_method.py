@@ -72,16 +72,20 @@ class UnquantizedFusedMoEMethod(vllm_UnquantizedFusedMoEMethod):
             # optional w{13,2}_bias references and SwiGLU gate params. Since
             # weight updates mutate those bias tensors in place, the kernel
             # does not need to be re-built.
-            self.moe_quant_config = self.get_fused_moe_quant_config(layer)
-            assert self.moe_quant_config is not None
-            assert self.experts_cls is not None
-            self.moe_kernel = make_unquantized_moe_kernel(
-                quant_config=self.moe_quant_config,
-                moe_config=self.moe,
-                backend=self.unquantized_backend,
-                experts_cls=self.experts_cls,
-                routing_tables=layer._expert_routing_tables(),
-            )
+            self._init_moe_kernel(layer)
+
+    def _init_moe_kernel(self, layer: "RoutedExperts") -> None:
+        """Build the MoE kernel from the layer's current (shuffled) weights."""
+        self.moe_quant_config = self.get_fused_moe_quant_config(layer)
+        assert self.moe_quant_config is not None
+        assert self.experts_cls is not None
+        self.moe_kernel = make_unquantized_moe_kernel(
+            quant_config=self.moe_quant_config,
+            moe_config=self.moe,
+            backend=self.unquantized_backend,
+            experts_cls=self.experts_cls,
+            routing_tables=layer._expert_routing_tables(),
+        )
 
     def forward_oot(
         self,
