@@ -1257,39 +1257,10 @@ def dispatch_fused_moe_kernel(
     assert topk_weights is None or topk_weights.stride(1) == 1
     assert sorted_token_ids is None or sorted_token_ids.stride(0) == 1
 
-    M = A.size(0)
-    num_tokens = M * top_k
-
     if (use_int8_w8a16 or use_int4_w4a16) and (
         block_shape is not None and block_shape[1] > 0
     ):
         assert B_bias is None
-
-        use_moe_wna16_cuda = should_moe_wna16_use_cuda(
-            num_valid_tokens=num_tokens,
-            group_size=block_shape[1],
-            num_experts=B.size(0),
-            bit=4 if use_int4_w4a16 else 8,
-        )
-
-        if use_moe_wna16_cuda:
-            pass
-        #     invoke_fused_moe_wna16_cuda_kernel(
-        #         A,
-        #         B,
-        #         C,
-        #         B_scale,
-        #         B_zp,
-        #         topk_weights,
-        #         sorted_token_ids,
-        #         expert_ids,
-        #         num_tokens_post_padded,
-        #         mul_routed_weight,
-        #         top_k,
-        #         config,
-        #         block_shape,
-        #     )
-        #     return
         if (
             use_int4_w4a16
             and mx_envs.MACA_VLLM_ENABLE_MCTLASS_FUSED_MOE
