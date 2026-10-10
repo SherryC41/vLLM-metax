@@ -43,7 +43,7 @@ def __init__(
     # /-------------------- MetaX Modification --------------------\
     # MACA is CUDA-like and compatible with following code
 
-    assert current_platform.is_cuda_alike() or current_platform.is_rocm(), (
+    assert current_platform.is_cuda_alike()(
         "SM/CU control is supported on CUDA-like and ROCm platforms"
     )
     # \-------------------- MetaX Modification --------------------/
