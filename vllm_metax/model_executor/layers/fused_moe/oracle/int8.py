@@ -271,7 +271,6 @@ def convert_to_int8_moe_kernel_format(
 
 
 def make_int8_moe_kernel(
-    int8_backend: Int8MoeBackend,
     moe_quant_config: FusedMoEQuantConfig,
     moe_config: FusedMoEConfig,
     experts_cls: type[mk.FusedMoEExperts],

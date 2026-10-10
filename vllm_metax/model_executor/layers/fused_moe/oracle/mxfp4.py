@@ -6,7 +6,7 @@ import torch
 
 import vllm.model_executor.layers.fused_moe.modular_kernel as mk
 from vllm.logger import init_logger
-
+from vllm.model_executor.utils import replace_parameter
 from vllm.model_executor.layers.fused_moe.activation import MoEActivation
 
 from vllm.model_executor.layers.fused_moe.oracle.mxfp4 import (
@@ -50,6 +50,24 @@ def convert_weight_to_mxfp4_moe_kernel_format(
     torch.Tensor | None,
 ]:
     if mxfp4_backend == Mxfp4MoeBackend.TRITON:
+        # The mctlass W4A16 GEMM consumes N-major block scales
+        # (``[experts, K / 32, N]``), so transpose them here, as part of the
+        # kernel-format conversion, instead of on every forward inside
+        # ``mctlassEx_fused_moe_mxfp4_w4a16_gemm``. They are registered on the
+        # layer so that the quantization config the experts read keeps aliasing
+        # the layer's parameters.
+        replace_parameter(
+            layer,
+            "w13_weight_scale",
+            w13_weight_scale.transpose(1, 2).contiguous(),
+        )
+        replace_parameter(
+            layer,
+            "w2_weight_scale",
+            w2_weight_scale.transpose(1, 2).contiguous(),
+        )
+        w13_weight_scale = layer.w13_weight_scale
+        w2_weight_scale = layer.w2_weight_scale
         return (
             w13_weight,
             w2_weight,
@@ -58,7 +76,6 @@ def convert_weight_to_mxfp4_moe_kernel_format(
             w13_bias,
             w2_bias,
         )
-
     else:
         raise ValueError(
             f"Unsupported mxfp4_backend for Mxfp4MoEMethod: {mxfp4_backend}. "

@@ -1284,7 +1284,17 @@ def mctlassEx_fused_moe_mxfp4_w4a16_gemm(
     assert c1.is_contiguous(), "fused moe output buffer is not contiguous"
     assert mctlass_moe_gemm is not None, "mctlass op is not imported correctly"
     assert a_scales is None
-    scales_b_trans = b_scales.transpose(1, 2).contiguous()
+    # The block scales are already N-major (``[experts, K / 32, N]``):
+    # ``convert_weight_to_mxfp4_moe_kernel_format`` transposes them once, while
+    # the weights are converted to the kernel format, where the same transpose
+    # used to run on every forward.
+    assert b_scales.dim() == 3 and b_scales.shape[0] == num_experts
+    assert b_scales.shape[1] == K // group_size, (
+        f"mxfp4 w4a16 block scales are not N-major: got shape "
+        f"{tuple(b_scales.shape)} for K={K}, N={N}, group_size={group_size}"
+    )
+    assert b_scales.shape[2] == N
+    assert b_scales.is_contiguous(), "mxfp4 w4a16 block scales are not contiguous"
     mctlass_moe_gemm(
         batch_size,
         N,
@@ -1296,7 +1306,7 @@ def mctlassEx_fused_moe_mxfp4_w4a16_gemm(
         b,
         c1,
         a_scales,
-        scales_b_trans,
+        b_scales,
         b_bias,
         topk_weights,
         token_ids,

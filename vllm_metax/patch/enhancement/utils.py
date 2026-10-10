@@ -2,13 +2,18 @@
 # 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
 #
 # -----------------------------------------------------------------------------
-# Note: Patch fused-MoE quantization helpers for MetaX INT8 execution paths.
+# Note: Patch fused-MoE quantization helpers for MetaX INT8 execution paths:
+#     MetaX's per-token INT8 quantizer, the W4A8 descriptor used by MetaX MoE
+#     experts, and the string dtype that descriptor carries.
 #
 # Affected versions: vLLM 0.29.1.dev0 (98dff2a81d), verified 2026-09-17.
 #
 # Remove at: Upstream supports MetaX per-token INT8 quantization and the W4A8 descriptor
-#     used by MetaX MoE experts.
+#     used by MetaX MoE experts, including its string-valued dtype dispatch.
 # -----------------------------------------------------------------------------
+
+import sys
+from typing import Any
 
 import torch
 from vllm.logger import init_logger
@@ -18,6 +23,7 @@ from vllm.model_executor.layers.quantization.utils.int8_utils import (
 from vllm.utils.math_utils import cdiv
 
 from vllm import _custom_ops as ops
+import vllm.model_executor.layers.fused_moe.utils as moe_utils
 from vllm_metax.patch.utils import patch
 
 logger = init_logger(__name__)
@@ -69,3 +75,91 @@ def _int8_quantize(
 @property
 def use_int4_w4a8(self):
     return self._a1.dtype == "int8" and self._w1.dtype == "int4"
+
+
+# Captured before the decorator below replaces the module attribute, so the
+# dtypes MetaX does not intercept keep upstream's dispatch.
+_moe_kernel_quantize_input_original = moe_utils.moe_kernel_quantize_input
+
+
+@patch(
+    "vllm.model_executor.layers.fused_moe.utils",
+    "moe_kernel_quantize_input",
+)
+def moe_kernel_quantize_input(
+    A: torch.Tensor,
+    A_scale: torch.Tensor | None,
+    quant_dtype: None | torch.dtype | str,
+    per_act_token_quant: bool,
+    block_shape: list[int] | None = None,
+    is_scale_swizzled: bool = True,
+    quantization_emulation: bool = False,
+    mx_alignment: int = 0,
+) -> tuple[torch.Tensor, torch.Tensor | None]:
+    """Quantize fused-MoE activations, accepting MetaX's string int8 dtype.
+
+    MetaX's W4A8 MoE descriptor names the activation dtype with the *string*
+    ``"int8"`` (see ``int4_w4a8_moe_quant_config`` and the ``use_int4_w4a8``
+    property above), while upstream only compares against ``torch.int8``. The
+    string would fall through to upstream's pass-through branch and reach the
+    MoE kernel with unquantized (bf16) activations, so route it to the same
+    (MetaX-patched) int8 quantizer as ``torch.int8``.
+
+    Every other dtype keeps upstream's behavior.
+    """
+    # ┌------------------------  Metax Modification -------------------------┐
+    if quant_dtype == "int8":
+        if quantization_emulation:
+            raise NotImplementedError(
+                "moe_kernel_quantize_input does not support quant_dtype='int8'"
+                " MOE quantization emulation. Please open an issue."
+            )
+        return _int8_quantize(A, A_scale, per_act_token_quant, block_shape)
+    # └------------------------- Metax Modification -------------------------┘
+    return _moe_kernel_quantize_input_original(
+        A,
+        A_scale,
+        quant_dtype,
+        per_act_token_quant,
+        block_shape,
+        is_scale_swizzled,
+        quantization_emulation,
+        mx_alignment,
+    )
+
+
+def _repoint_import_aliases(replacement: Any, original: Any) -> None:
+    """Re-point modules that already imported ``moe_kernel_quantize_input``.
+
+    ``from vllm.model_executor.layers.fused_moe.utils import
+    moe_kernel_quantize_input`` binds the function object while the importing
+    module is loaded, so a module loaded before this patch would keep calling
+    the original and still leave the activations unquantized. Modules loaded
+    after it resolve the patched module attribute on their own, so only the ones
+    already in ``sys.modules`` are re-pointed here; each one goes through the
+    shared decorator, which records the replaced object and rejects duplicates.
+    """
+    for module_name, module in list(sys.modules.items()):
+        if module is None or not module_name.startswith("vllm"):
+            continue
+        try:
+            aliased = getattr(module, "moe_kernel_quantize_input", None)
+        except Exception:
+            # Attribute lookup can run module-level hooks; never let that break
+            # plugin loading.
+            continue
+        if aliased is not original:
+            continue
+        try:
+            patch(module_name, "moe_kernel_quantize_input", allow_missing=True)(
+                replacement
+            )
+        except Exception:
+            logger.warning(
+                "Could not re-point moe_kernel_quantize_input in %s",
+                module_name,
+                exc_info=True,
+            )
+
+
+_repoint_import_aliases(moe_kernel_quantize_input, _moe_kernel_quantize_input_original)

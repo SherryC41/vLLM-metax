@@ -7,6 +7,7 @@ import mmap
 import tempfile
 import weakref
 from contextlib import ExitStack
+from typing import Any, ClassVar
 
 import numpy as np
 import torch
@@ -28,6 +29,7 @@ from vllm.models.deepseek_v41.common.engram import (
     DEAD_ID,
     EngramLayout,
     _engram_head_shard_weight_loader,
+    _engram_lookup_kernel,
     _engram_select_rows,
 )
 from vllm.models.deepseek_v41.common.engram import (
@@ -36,6 +38,7 @@ from vllm.models.deepseek_v41.common.engram import (
 from vllm.models.deepseek_v41.common.engram import (
     ParallelEngramEmbedding as BaseParallelEngramEmbedding,
 )
+from vllm.triton_utils import tl, triton
 from vllm.utils.platform_utils import is_uva_available
 from vllm.utils.torch_utils import get_accelerator_view_from_cpu_tensor
 import vllm_metax.envs as mx_envs
@@ -92,16 +95,35 @@ def gather_engram_hashes(
 
 
 class DPSharedEngramStorage:
-    """Registered host weights shared by a node-local DP group with one writer."""
+    """Registered host weights shared by a node-local DP group with one writer.
+
+    The table is one physical allocation holding the quantized rows followed by
+    their per-block scales. Both element types are supplied by the embedding
+    class, so the FP8 (E4M3 + UE8M0 bytes) and INT8 (INT8 + FP32) layouts share
+    this code.
+    """
 
     def __init__(
-        self, num_rows: int, dim: int, block_size: int, group: GroupCoordinator
+        self,
+        num_rows: int,
+        dim: int,
+        block_size: int,
+        group: GroupCoordinator,
+        weight_dtype: torch.dtype = torch.float8_e4m3fn,
+        scale_dtype: torch.dtype = torch.uint8,
+        scale_param_name: str = "weight_scale_inv",
     ) -> None:
         self.group = group
-        weight_bytes = num_rows * dim
-        storage = self._allocate(weight_bytes + weight_bytes // block_size)
-        self.weight = storage[:weight_bytes].view(torch.float8_e4m3fn).view(-1, dim)
-        self.weight_scale_inv = storage[weight_bytes:].view(-1, dim // block_size)
+        self.scale_param_name = scale_param_name
+        weight_bytes = num_rows * dim * weight_dtype.itemsize
+        scale_bytes = num_rows * (dim // block_size) * scale_dtype.itemsize
+        storage = self._allocate(weight_bytes + scale_bytes)
+        self.weight = storage[:weight_bytes].view(weight_dtype).view(-1, dim)
+        setattr(
+            self,
+            scale_param_name,
+            storage[weight_bytes:].view(scale_dtype).view(-1, dim // block_size),
+        )
         self._views: tuple[torch.Tensor, torch.Tensor] | None = None
 
     def _allocate(self, num_bytes: int) -> torch.Tensor:
@@ -205,21 +227,114 @@ class DPSharedEngramStorage:
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if (weight.data_ptr(), scales.data_ptr()) != (
             self.weight.data_ptr(),
-            self.weight_scale_inv.data_ptr(),
+            getattr(self, self.scale_param_name).data_ptr(),
         ):
             raise RuntimeError("Shared Engram parameter storage must not be replaced")
         if self._views is None:
             self._views = (
                 get_accelerator_view_from_cpu_tensor(self.weight),
-                get_accelerator_view_from_cpu_tensor(self.weight_scale_inv),
+                get_accelerator_view_from_cpu_tensor(
+                    getattr(self, self.scale_param_name)
+                ),
             )
         return self._views
 
 
+@triton.jit(
+    do_not_specialize=[
+        "vocab_start",
+        "vocab_end",
+        "num_rows",
+        "ids_stride_t",
+        "ids_stride_h",
+        "GRID",
+    ]
+)
+def _engram_lookup_kernel_int8(
+    weight,
+    scales,
+    ids,
+    out,
+    vocab_start,
+    vocab_end,
+    num_rows,
+    ids_stride_t,
+    ids_stride_h,
+    HEAD_START: tl.constexpr,
+    LOCAL_HEADS: tl.constexpr,
+    TOTAL_HEADS: tl.constexpr,
+    DIM: tl.constexpr,
+    QUANT_BLOCK: tl.constexpr,
+    BLOCK_R: tl.constexpr,
+    GRID,
+):
+    """Gather INT8 rows, apply their FP32 block scales, write bf16.
+
+    Same shape/grid contract as the FP8 lookup; only the dequantization differs
+    (INT8 values times FP32 block scales instead of E4M3 times decoded UE8M0
+    exponents). Only this rank's heads are read; padded heads write zeros for
+    the all-gather. `weight`/`scales` may address pinned host memory through UVA.
+    """
+    cols = tl.arange(0, DIM)
+    scale_cols = cols // QUANT_BLOCK
+    for base in tl.range(tl.program_id(0) * BLOCK_R, num_rows, GRID * BLOCK_R):
+        rows = base + tl.arange(0, BLOCK_R)
+        valid = rows < num_rows
+        head = HEAD_START + rows % LOCAL_HEADS
+        token = (rows // LOCAL_HEADS).to(tl.int64)
+        index = tl.load(
+            ids + token * ids_stride_t + head * ids_stride_h,
+            mask=valid & (head < TOTAL_HEADS),
+            other=-1,
+        ).to(tl.int64)
+        owned = valid & (head < TOTAL_HEADS)
+        owned &= (index >= vocab_start) & (index < vocab_end)
+        local = tl.where(owned, index - vocab_start, 0)
+        values = tl.load(
+            weight + local[:, None] * DIM + cols[None, :],
+            mask=owned[:, None],
+            other=0,
+        )
+        scale = tl.load(
+            scales + local[:, None] * (DIM // QUANT_BLOCK) + scale_cols[None, :],
+            mask=owned[:, None],
+            other=0.0,
+        )
+        tl.store(
+            out + rows[:, None] * DIM + cols[None, :],
+            (values.to(tl.float32) * scale).to(tl.bfloat16),
+            mask=valid[:, None],
+        )
+
+
 class ParallelEngramEmbedding(BaseParallelEngramEmbedding):
-    """Extend TP lookup with DP head sharding or shared, CPU-offloaded TP slices."""
+    """Extend TP lookup with DP head sharding or shared, CPU-offloaded TP slices.
+
+    The table layout is described by the class attributes below so the INT8
+    variant ([`MacaInt8EngramEmbedding`]) can reuse every part of the lookup,
+    the host-shared storage, and the offload plumbing.
+    """
 
     _shared_memory: DPSharedEngramStorage | None = None
+
+    #: Lookup-table rows: FP8 E4M3 for FP8 checkpoints, INT8 for W4A8 ones.
+    weight_dtype: ClassVar[torch.dtype] = torch.float8_e4m3fn
+    #: Per-block scales: UE8M0 exponent bytes for FP8 (power-of-two scales),
+    #: FP32 for INT8 (the checkpoints store them in the model's bf16 dtype;
+    #: they are held as FP32 so the lookup dequantizes in one dtype and either
+    #: checkpoint would still load, a bf16 to FP32 upcast being exact).
+    scale_dtype: ClassVar[torch.dtype] = torch.uint8
+    #: Parameter name the checkpoint ships the block scales under. INT8 tables
+    #: use the same ``weight_scale`` spelling as every other quantized weight,
+    #: FP8 tables keep ``weight_scale_inv`` (mirroring ``.scale``).
+    scale_param_name: ClassVar[str] = "weight_scale_inv"
+    #: gather-and-dequantize kernel over one rank's rows.
+    lookup_kernel: ClassVar[Any] = staticmethod(_engram_lookup_kernel)
+    #: Constant fill values for the (huge) dummy tables under ``--load-format
+    #: dummy``; avoids randomizing host memory that is never read meaningfully.
+    dummy_weight_value: ClassVar[float] = 1.0
+    #: The ue8m0 encoding of scale 1.0 is exponent byte 127.
+    dummy_scale_value: ClassVar[float] = 127
 
     def __init__(
         self,
@@ -249,19 +364,47 @@ class ParallelEngramEmbedding(BaseParallelEngramEmbedding):
         self._views: tuple[torch.Tensor, torch.Tensor] | None = None
         self._view_src: tuple[int, int] | None = None
         super().__init__(num_embeddings, dim, head_sizes, block_size)
+        self._rename_scale_param()
         if cpu_offload:
             # Constant dummy values avoid randomizing huge CPU lookup tables.
-            set_weight_attrs(self.weight, {"dummy_weight_value": 1.0})
-            # The ue8m0 encoding of scale 1.0 is exponent byte 127.
-            set_weight_attrs(self.weight_scale_inv, {"dummy_weight_value": 127})
+            set_weight_attrs(
+                self.weight, {"dummy_weight_value": self.dummy_weight_value}
+            )
+            set_weight_attrs(
+                self._scale_param(), {"dummy_weight_value": self.dummy_scale_value}
+            )
             logger.info(
                 "Engram table offloaded to pinned host memory: %d rows x %d, "
                 "%.2f GiB %s",
                 self.part_num_embeddings,
                 dim,
-                self.part_num_embeddings * (dim + dim // block_size) / 1024**3,
+                self.part_num_embeddings * self._bytes_per_row() / 1024**3,
                 "shared across DP replicas" if dp_shared_memory else "per rank",
             )
+
+    def _bytes_per_row(self) -> int:
+        """Host bytes one table row occupies: quantized values plus its blocks."""
+        values = self.dim * self.weight_dtype.itemsize
+        scales = (self.dim // self.block_size) * self.scale_dtype.itemsize
+        return values + scales
+
+    def _scale_param(self) -> torch.nn.Parameter:
+        """This rank's per-block scale parameter."""
+        return getattr(self, self.scale_param_name)
+
+    def _rename_scale_param(self) -> None:
+        """Re-register the block scales under the checkpoint's parameter name.
+
+        ``BaseParallelEngramEmbedding`` always registers ``weight_scale_inv``;
+        the INT8 tables name it ``weight_scale`` like every other quantized
+        weight, so the mapper's ``engram.embed.weight_scale`` rule lands here.
+        """
+        if self.scale_param_name == "weight_scale_inv":
+            return
+        scale = self.weight_scale_inv
+        del self._parameters["weight_scale_inv"]
+        self.__dict__.pop("weight_scale_inv", None)
+        setattr(self, self.scale_param_name, scale)
 
     def _get_shard_info(self) -> tuple[int, int]:
         if self.dp_size == 1:
@@ -273,45 +416,87 @@ class ParallelEngramEmbedding(BaseParallelEngramEmbedding):
             group = get_engram_dp_group()
             assert group is not None
             storage = DPSharedEngramStorage(
-                self.part_num_embeddings, self.dim, self.block_size, group
+                self.part_num_embeddings,
+                self.dim,
+                self.block_size,
+                group,
+                weight_dtype=self.weight_dtype,
+                scale_dtype=self.scale_dtype,
+                scale_param_name=self.scale_param_name,
             )
             self._shared_memory = storage
             self._weight_loader = storage.load_weight
-            return storage.weight, storage.weight_scale_inv
-        if not self.cpu_offload:
-            return super()._allocate_weights()
-        # Model initialization may be inside a CUDA device context.
+            return storage.weight, getattr(storage, self.scale_param_name)
+        # Model initialization may be inside a CUDA device context, so the
+        # offloaded tables are pinned CPU allocations; resident ones follow the
+        # current device like any other parameter.
+        pin = self.cpu_offload
+        device = "cpu" if pin else None
         return (
             torch.empty(
                 self.part_num_embeddings,
                 self.dim,
-                dtype=torch.float8_e4m3fn,
-                device="cpu",
-                pin_memory=True,
+                dtype=self.weight_dtype,
+                device=device,
+                pin_memory=pin,
             ),
             torch.empty(
                 self.part_num_embeddings,
                 self.dim // self.block_size,
-                dtype=torch.uint8,
-                device="cpu",
-                pin_memory=True,
+                dtype=self.scale_dtype,
+                device=device,
+                pin_memory=pin,
             ),
         )
 
     def _storage(self) -> tuple[torch.Tensor, torch.Tensor]:
         if self._shared_memory is not None:
-            return self._shared_memory.get_views(self.weight, self.weight_scale_inv)
+            return self._shared_memory.get_views(self.weight, self._scale_param())
         if not self.cpu_offload:
             return super()._storage()
-        src = (self.weight.data_ptr(), self.weight_scale_inv.data_ptr())
+        src = (self.weight.data_ptr(), self._scale_param().data_ptr())
         if self._view_src != src:
             self._views = (
                 get_accelerator_view_from_cpu_tensor(self.weight.data),
-                get_accelerator_view_from_cpu_tensor(self.weight_scale_inv.data),
+                get_accelerator_view_from_cpu_tensor(self._scale_param().data),
             )
             self._view_src = src
         assert self._views is not None
         return self._views
+
+    def lookup(
+        self, indices: torch.Tensor, out: torch.Tensor, background: bool = False
+    ) -> None:
+        """Look up local heads of [T, heads] into [T, local_heads, dim] bf16.
+
+        `background` limits the grid to leave SMs for concurrent work.
+        """
+        rows = indices.shape[0] * self.part_n_hash_cols
+        if not rows:
+            return
+        weight, scales = self._storage()
+        # The table dwarfs TLB reach, so a persistent grid near the SM count
+        # beats one program per row; halve it to leave SMs for the main stream.
+        tiles = triton.cdiv(rows, 16)
+        grid = min(tiles, self._num_sms // 2 if background else self._num_sms)
+        self.lookup_kernel[(grid,)](
+            weight,
+            scales,
+            indices,
+            out,
+            self.vocab_start_idx,
+            self.vocab_end_idx,
+            rows,
+            indices.stride(0),
+            indices.stride(1),
+            HEAD_START=self.head_start,
+            LOCAL_HEADS=self.part_n_hash_cols,
+            TOTAL_HEADS=self.n_hash_cols,
+            DIM=self.dim,
+            QUANT_BLOCK=self.block_size,
+            BLOCK_R=16,
+            GRID=grid,
+        )
 
     def forward(self, indices: torch.Tensor) -> torch.Tensor:
         if self.dp_size == 1:
@@ -328,6 +513,25 @@ class ParallelEngramEmbedding(BaseParallelEngramEmbedding):
         if self.tp_size > 1:
             out = tensor_model_parallel_all_gather(out, dim=1)
         return out[:, : self.n_hash_cols]
+
+
+class MacaInt8EngramEmbedding(ParallelEngramEmbedding):
+    """Engram tables for the W4A8 checkpoints: INT8 rows, one scale per 32 columns.
+
+    The W4A8 export ships ``engram.embed.weight`` (INT8) plus
+    ``engram.embed.weight_scale``: like every other *group-wise* int scale in
+    these checkpoints the blocks are of the model's own dtype, so they arrive as
+    bf16 and are loaded into the FP32 table allocated here. The FP8 checkpoints
+    keep the E4M3 + UE8M0 block layout of [`ParallelEngramEmbedding`] instead;
+    ``VLLM_METAX_SUPPORTS_FP8`` picks between the two.
+    """
+
+    weight_dtype: ClassVar[torch.dtype] = torch.int8
+    scale_dtype: ClassVar[torch.dtype] = torch.float32
+    scale_param_name: ClassVar[str] = "weight_scale"
+    lookup_kernel: ClassVar[Any] = staticmethod(_engram_lookup_kernel_int8)
+    dummy_weight_value: ClassVar[float] = 1.0
+    dummy_scale_value: ClassVar[float] = 1.0
 
 
 def _gather_engram_rows(staged: torch.Tensor, num_tokens: int) -> torch.Tensor:
@@ -354,18 +558,38 @@ class Engram(BaseEngram):
 
     _prefetch_stream: torch.cuda.Stream | None = None
 
+    def _embedding_cls(self) -> type[ParallelEngramEmbedding]:
+        """Block format of the checkpoint's n-gram tables.
+
+        ``VLLM_METAX_SUPPORTS_FP8`` selects the FP8 checkpoints (E4M3 rows with
+        UE8M0 block scales); the W4A8 checkpoints ship INT8 rows with one
+        block scale per 32 columns, so they take the INT8 lookup.
+        """
+        if mx_envs.VLLM_METAX_SUPPORTS_FP8:
+            return ParallelEngramEmbedding
+        return MacaInt8EngramEmbedding
+
     def _create_embedding(
         self, layout: EngramLayout, layer_hash_index: int
     ) -> ParallelEngramEmbedding:
         engram_config = get_current_vllm_config().engram_config
         assert engram_config is not None
-        return ParallelEngramEmbedding(
+        embedding_cls = self._embedding_cls()
+        embedding = embedding_cls(
             layout.num_embeddings[layer_hash_index],
             layout.head_dim,
             tuple(size for order in layout.primes[layer_hash_index] for size in order),
             cpu_offload=engram_config.cpu_offload,
             dp_shared_memory=engram_config.dp_shared_memory,
         )
+        logger.info_once(
+            "Engram n-gram tables: %s %s rows with one %s scale per %d columns",
+            embedding_cls.__name__,
+            embedding.weight_dtype,
+            embedding.scale_dtype,
+            embedding.block_size,
+        )
+        return embedding
 
     def _init_staging(self, max_tokens: int, head_dim: int) -> None:
         super()._init_staging(max_tokens * self.embed_tokens.dp_size, head_dim)

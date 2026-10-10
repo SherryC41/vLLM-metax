@@ -58,12 +58,24 @@ from .model import (
     _use_sequence_parallel,
     make_deepseek_v4_expert_params_mapping,
 )
+from .ops.kv_cache_int8 import (
+    fused_qnorm_rope_kv_int8_insert,
+)
 
 logger = init_logger(__name__)
 
 # MoE expert scale suffix differs by expert dtype (mirrors deepseek_v4 loaders):
 # fp4 experts register ``.weight_scale``; block-fp8 experts ``.weight_scale_inv``.
 _EXPERT_SCALE_RE = re.compile(r"\.experts\.\d+\.w[123]\.scale$")
+# Draft sub-modules the checkpoint places at model level (``mtp.0.main_proj``,
+# ``mtp.<last>.markov_head``) rather than inside a decoder block.
+_MODEL_LEVEL_DSPARK_NAMES = (
+    "main_proj",
+    "main_norm",
+    "norm",
+    "markov_head",
+    "confidence_head",
+)
 
 
 class DSparkDeepseekV4Model(nn.Module):
@@ -251,6 +263,23 @@ def _insert_context_kv(
         dtype=kv.dtype,
         device=kv.device,
     )
+
+    if cache_dtype == torch.int8:
+        # MetaX int8_ds_mla paged path: NoPE + RoPE both int8 with one fp32
+        # scale per 32 dims, 576 B/token.
+        return fused_qnorm_rope_kv_int8_insert(
+            dummy_q,
+            kv,
+            swa_cache,
+            slot_mapping,
+            positions,
+            cos_sin_cache,
+            attn.padded_heads,
+            attn.eps,
+            block_size,
+            True,
+        )
+
     if cache_dtype == torch.uint8:
         # fp8_ds_mla UE8M0 paged layout
         swa_2d = swa_cache.view(swa_cache.shape[0], -1)
@@ -265,7 +294,7 @@ def _insert_context_kv(
             attn.eps,
             block_size,
             True,  # apply_q_norm (unused: the query is a discarded dummy)
-            # attn.kv_mxfp8,
+            attn.kv_mxfp8,
         )
     elif cache_dtype == torch.bfloat16:
         swa_3d = swa_cache.view(-1, block_size, attn.head_dim)
@@ -298,9 +327,64 @@ def _insert_context_kv(
         )
 
 
+def _dspark_quant_prefixes(entry: str, num_hidden_layers: int) -> list[str]:
+    """Module prefixes a checkpoint ``mtp.{stage}.*`` name refers to.
+
+    The W4A8 checkpoints write their ``ignore`` list in the checkpoint's own
+    naming (``mtp.0.attn.wo_a``), while this drafter builds its modules either
+    under the merged layer index (``model.layers.{num_hidden_layers + stage}``,
+    which keeps the per-layer attention/compression routing of the backbone) or
+    at model level for the head stack. Return every prefix the entry may denote;
+    unmatched extras in an ignore list are inert.
+    """
+    match = re.fullmatch(r"mtp\.(\d+)\.(.+)", entry)
+    if match is None:
+        return []
+    stage = int(match.group(1))
+    rest = match.group(2)
+    prefixes = [f"model.layers.{num_hidden_layers + stage}.{rest}"]
+    if rest.split(".", 1)[0] in _MODEL_LEVEL_DSPARK_NAMES:
+        prefixes.append(f"model.{rest}")
+    if rest.startswith("markov_head.embed"):
+        prefixes.append(
+            "model.markov_head.markov_w1" + rest.removeprefix("markov_head.embed")
+        )
+    if rest.startswith("markov_head.head"):
+        prefixes.append(
+            "model.markov_head.markov_w2" + rest.removeprefix("markov_head.head")
+        )
+    if rest == "head" or rest.startswith("head."):
+        prefixes.append("lm_head" + rest.removeprefix("head"))
+    return prefixes
+
+
+def _add_dspark_ignore_entries(quant_config, config) -> None:
+    """Append this drafter's module paths to the checkpoint's ignore list.
+
+    Without this the ``mtp.*`` entries never match the drafter's prefixes, so
+    e.g. ``wo_a`` (stored unquantized, with no scale) would be handed a
+    quantization method and fail to load.
+    """
+    if quant_config is None:
+        return
+    num_hidden_layers = int(getattr(config, "num_hidden_layers", 0) or 0)
+    for attr in ("ignore", "ignored_layers"):
+        entries = getattr(quant_config, attr, None)
+        if entries is None:
+            continue
+        known = set(entries)
+        for entry in list(entries):
+            for prefix in _dspark_quant_prefixes(entry, num_hidden_layers):
+                if prefix not in known:
+                    known.add(prefix)
+                    entries.append(prefix)
+
+
 class DSparkDeepseekV4ForCausalLM(nn.Module):
-    # Draft weights ship in the target checkpoint (mtp.*) without embed/head, so
-    # load_dspark_model always aliases the target's.
+    # The drafter ships its own input embedding / output head as ``mtp.0.embed``
+    # and ``mtp.<last>.head`` in the W4A8 checkpoints; loading those flips the
+    # flag below (``load_weights``) so load_dspark_model keeps them instead of
+    # aliasing the target's. FP8 checkpoints omit them and stay aliased.
     has_own_embed_tokens = False
     has_own_lm_head = False
     # Full-vocab draft: draft ids are target ids, no remapping needed.
@@ -318,10 +402,15 @@ class DSparkDeepseekV4ForCausalLM(nn.Module):
         self.pad_shared_expert = getattr(
             self.quant_config, "weight_block_size", None
         ) is not None and not _use_sequence_parallel(vllm_config)
+        # The checkpoint's ``ignore`` list names the drafter's modules ``mtp.*``,
+        # which never matches this model's own prefixes; translate before the
+        # layers pick their quantization methods.
+        _add_dspark_ignore_entries(self.quant_config, self.config)
         self.model = DSparkDeepseekV4Model(
             vllm_config=vllm_config, prefix=maybe_prefix(prefix, "model")
         )
-        # Shared with the target (aliased by the speculator's load utility).
+        # Kept when ``load_weights`` finds the drafter's own table, otherwise
+        # replaced by the target's (see ``has_own_lm_head``).
         self.lm_head = ParallelLMHead(
             self.config.vocab_size,
             self.config.hidden_size,
@@ -441,6 +530,14 @@ class DSparkDeepseekV4ForCausalLM(nn.Module):
             if mapped is None:
                 continue
             name = mapped
+            # The drafter owns these tables only when the checkpoint ships them
+            # (``mtp.0.embed`` / ``mtp.<last>.head``); otherwise the speculator's
+            # loader aliases the target's, which needs the flags left False.
+            if name == "model.embed_tokens.weight":
+                self.has_own_embed_tokens = True
+            elif name == "lm_head.weight":
+                self.has_own_lm_head = True
+
             if "confidence_head." in name:
                 loaded_confidence_head = True
 
@@ -514,7 +611,12 @@ class DSparkDeepseekV4ForCausalLM(nn.Module):
         if self.model.confidence_head is not None and not loaded_confidence_head:
             self.model.confidence_head = None
         self.process_weights_after_loading()
-        logger.info_once("DSpark draft model loaded: %d params", len(loaded_params))
+        logger.info_once(
+            "DSpark draft model loaded: %d params (own embed=%s, own head=%s)",
+            len(loaded_params),
+            self.has_own_embed_tokens,
+            self.has_own_lm_head,
+        )
         return loaded_params
 
     def _finalize_moe(self) -> None:
@@ -546,6 +648,14 @@ class DSparkDeepseekV4ForCausalLM(nn.Module):
             return "model.markov_head.markov_w2." + rest.removeprefix(
                 "markov_head.head."
             )
+        # The W4A8 checkpoints also ship the drafter's own input embedding and
+        # output head (``mtp.0.embed`` / ``mtp.<last>.head``); those load into
+        # this model instead of the target's aliased tables. Checked after the
+        # Markov rules so ``markov_head.embed``/``head`` stay with the head.
+        if rest.startswith("embed."):
+            return "model.embed_tokens." + rest.removeprefix("embed.")
+        if rest.startswith("head."):
+            return "lm_head." + rest.removeprefix("head.")
         # Head-stack params live at model level (mtp.last), context combiner at
         # model level (mtp.0); everything else is a per-layer decoder block.
         head_prefixes = (

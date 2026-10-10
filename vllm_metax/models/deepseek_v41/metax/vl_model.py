@@ -112,6 +112,16 @@ def _make_deepseek_v4_vl_weights_mapper(
     )
 
 
+# Checkpoint family the platform is running: MetaX parts with FP8 support load
+# the FP8 catalog (MXFP4 experts, block-FP8 linears), the others the int8/INT4
+# (W4A8) export. Used for the class-level mapper below, which is built before a
+# live VllmConfig exists.
+_DEFAULT_EXPERT_DTYPE = "fp4" if mx_envs.VLLM_METAX_SUPPORTS_FP8 else "int8"
+_DEFAULT_LINEAR_SCALE_NAME = (
+    "weight_scale_inv" if mx_envs.VLLM_METAX_SUPPORTS_FP8 else "weight_scale"
+)
+
+
 @MULTIMODAL_REGISTRY.register_processor(
     DeepseekV4VLMultiModalProcessor,
     info=DeepseekV4VLProcessingInfo,
@@ -125,6 +135,24 @@ class DeepseekV41ForCausalLM(nn.Module, SupportsMultiModal, SupportsPP, Supports
     """
 
     supports_encoder_tp_data = True
+
+    # This is the registered architecture, so ``configure_quant_config`` runs
+    # these against the checkpoint's quantization config before any layer is
+    # built. The mapper rewrites the config's reference-style ``ignore`` names
+    # into this wrapper's module paths (``layers.0.attn.wo_a`` ->
+    # ``language_model.model.layers.0.attn.wo_a``), which is what keeps the
+    # unquantized layers (``wo_a``, ``engram.wkv``, the compression projections)
+    # loading raw weights; the packed mapping lets a fused projection whose
+    # shards are all ignored be skipped as a whole. The instance copies assigned
+    # in ``__init__`` are only used to load weights.
+    hf_to_vllm_mapper = _make_deepseek_v4_vl_weights_mapper(
+        _DEFAULT_EXPERT_DTYPE, _DEFAULT_LINEAR_SCALE_NAME
+    )
+    packed_modules_mapping = {
+        "gate_up_proj": ["w1", "w3"],
+        "fused_wqa_wkv": ["wq_a", "wkv"],
+        "fused_wkv_wgate": ["wkv", "wgate"],
+    }
 
     # The MoE router needs raw token ids to detect image-span tokens
     # (all carrying image_token_id, see common/mm_preprocess.py) and apply
@@ -179,9 +207,7 @@ class DeepseekV41ForCausalLM(nn.Module, SupportsMultiModal, SupportsPP, Supports
             self.language_model.make_empty_intermediate_tensors
         )
 
-        expert_dtype = getattr(
-            config, "expert_dtype", "fp4" if mx_envs.VLLM_METAX_SUPPORTS_FP8 else "int8"
-        )
+        expert_dtype = getattr(config, "expert_dtype", _DEFAULT_EXPERT_DTYPE)
         self.hf_to_vllm_mapper = _make_deepseek_v4_vl_weights_mapper(
             expert_dtype, _linear_scale_param_name(vllm_config, expert_dtype)
         )

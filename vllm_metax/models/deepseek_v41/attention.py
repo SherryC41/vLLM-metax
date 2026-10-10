@@ -99,6 +99,24 @@ def _indexer_k_cache_head_dim(index_head_dim: int, use_fp4_kv: bool) -> int:
     return index_head_dim + index_head_dim // 128 * 4
 
 
+def _indexer_wk_quant_config(
+    quant_config: QuantizationConfig | None,
+) -> QuantizationConfig | None:
+    """Quantization for the indexer's ``wk`` projection, if the checkpoint has one.
+
+    The FP8 catalog stores ``wk`` in BF16 with no ``weight_scale``, so it must
+    stay unquantized. The int8/INT4 (W4A8) export quantizes it like the other
+    linears and ships a scale. compressed-tensors checkpoints spell that out in
+    their own scheme and ``ignore`` lists, so hand the config through and let
+    them decide; other methods keep ``wk`` unquantized.
+    """
+    from vllm.model_executor.layers.quantization.compressed_tensors.compressed_tensors import (  # noqa: E501
+        CompressedTensorsConfig,
+    )
+
+    return quant_config if isinstance(quant_config, CompressedTensorsConfig) else None
+
+
 @triton.jit
 def _fill_short_context_topk_indices(
     output,
@@ -923,7 +941,7 @@ class DeepseekV4Attention(nn.Module, AttentionLayerBase, ABC):
                 self.eps,
                 swa_metadata.block_size,
                 False,
-                # self.kv_mxfp8,
+                self.kv_mxfp8,
             )
 
         # Plain-row path: the [num_blocks, block_size, 512] cache stores the KV
@@ -1157,12 +1175,13 @@ class DeepseekV4Indexer(nn.Module):
         assert cache_config is not None, "Deepseek V4 indexer requires cache_config"
         if owns_k:
             # wk maps the main compressor's (pre-RoPE) latent to index keys.
-            # The checkpoint stores it in bf16 with no quantization scales.
+            # FP8 checkpoints store it in bf16 with no scales; the W4A8 ones
+            # quantize it, which the checkpoint's own scheme decides.
             self.wk = ReplicatedLinear(
                 main_head_dim,
                 self.head_dim,
                 bias=False,
-                quant_config=None,
+                quant_config=_indexer_wk_quant_config(quant_config),
                 prefix=f"{prefix}.wk",
             )
             self.k_norm = RMSNorm(self.head_dim, config.rms_norm_eps)
