@@ -2,18 +2,22 @@
 # 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+from typing import Any
+
 from vllm.v1.attention.backends.fa_utils import logger
 from vllm.platforms import current_platform
 
 
 if current_platform.is_out_of_tree():
     from vllm import _custom_ops as ops
-    from vllm_metax._dummy_ops import dummy_ops
     from flash_attn import flash_attn_varlen_func, flash_attn_with_kvcache  # noqa: F401
 
-    get_scheduler_metadata = dummy_ops.get_scheduler_metadata
     reshape_and_cache_flash = ops.reshape_and_cache_flash
     compile_flash_attn_varlen_func_from_specs = None  # type: ignore[assignment]
+
+    # MACA doesn't use scheduler metadata (FA3 feature), provide stub
+    def get_scheduler_metadata(*args: Any, **kwargs: Any) -> None:  # type: ignore[misc]
+        return None
 
 
 def get_flash_attn_version(
@@ -33,6 +37,12 @@ def get_flash_attn_version(
     # metax flash_attn api does not have parameter
     # for `fa_version`.
     return 2
+
+
+def uses_fa4_hd256_kernel(
+    head_size: int | None, head_size_v: int | None = None
+) -> bool:
+    return False
 
 
 def is_fa_version_supported(fa_version: int) -> bool:
@@ -60,7 +70,7 @@ def flash_attn_supports_quant_query_input() -> bool:
 
 
 def flash_attn_supports_sinks() -> bool:
-    # maca fa2 supports sinks
+    # maca fa2 supports sinks only for gemma model
     return True
 
 
@@ -70,9 +80,3 @@ def flash_attn_supports_mla():
 
 def is_flash_attn_varlen_func_available() -> bool:
     return True
-
-
-def uses_fa4_hd256_kernel(
-    head_size: int | None, head_size_v: int | None = None
-) -> bool:
-    return False

@@ -34,7 +34,7 @@ from vllm.v1.attention.backends.utils import (
 )
 
 # ----------------------------
-# Note: flashmla on maca does not support fp8 related features yet
+# The local dense FP8 entry points are stubs; sparse FP8 is a separate backend.
 from vllm_metax.v1.attention.ops.flashmla import (
     FlashMLASchedMeta,
     flash_mla_with_kvcache,
@@ -56,7 +56,6 @@ class MacaFlashMLABackend(MLACommonBackend):
         "auto",
         "float16",
         "bfloat16",
-        "fp8",
     ]
 
     @staticmethod
@@ -77,7 +76,9 @@ class MacaFlashMLABackend(MLACommonBackend):
 
     @classmethod
     def supports_compute_capability(cls, capability: DeviceCapability) -> bool:
-        return capability.major in [9, 10]
+        # MetaX C500 reports 8.0; the installed MACA FlashMLA dense kernel
+        # runs on this device. NVIDIA SM90/SM100 gates do not apply here.
+        return is_flashmla_dense_supported()[0]
 
     @classmethod
     def supports_combination(
@@ -92,6 +93,8 @@ class MacaFlashMLABackend(MLACommonBackend):
         use_mm_prefix: bool,
         device_capability: DeviceCapability,
     ) -> str | None:
+        if kv_cache_dtype is not None and is_quantized_kv_cache(kv_cache_dtype):
+            return "MetaX dense FlashMLA does not support quantized KV caches"
         if use_sparse:
             from vllm_metax.v1.attention.ops.flashmla import (
                 is_flashmla_sparse_supported,
@@ -214,6 +217,7 @@ class FlashMLAMetadataBuilder(MLACommonMetadataBuilder[FlashMLAMetadata]):
 
 class FlashMLAImpl(MLACommonImpl[FlashMLAMetadata]):
     can_return_lse_for_decode: bool = True
+    supports_dcp: bool = True
 
     def __init__(
         self,
@@ -244,6 +248,10 @@ class FlashMLAImpl(MLACommonImpl[FlashMLAMetadata]):
             **mla_args,
         )
 
+        if is_quantized_kv_cache(kv_cache_dtype):
+            raise NotImplementedError(
+                "MetaX dense FlashMLA does not support quantized KV caches"
+            )
         is_supported, reason = is_flashmla_dense_supported()
         assert is_supported, reason
 

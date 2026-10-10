@@ -307,6 +307,12 @@ class MacaPlatformBase(Platform):
         compilation_config = vllm_config.compilation_config
         model_config = vllm_config.model_config
 
+        if (
+            parallel_config.prefill_context_parallel_size > 1
+            and parallel_config.data_parallel_size > 1
+        ):
+            raise ValueError("PCP does not support data parallelism on CUDA yet.")
+
         if parallel_config.worker_cls == "auto":
             parallel_config.worker_cls = resolve_worker_cls(
                 vllm_config.additional_config,
@@ -453,6 +459,26 @@ class MacaPlatformBase(Platform):
         return valid_backends_priorities, invalid_reasons
 
     @classmethod
+    def _get_indexer_block_alignment(cls, vllm_config: VllmConfig) -> int | None:
+        index_kpool = getattr(
+            vllm_config.model_config.hf_text_config, "index_kpool", None
+        )
+        if not index_kpool or index_kpool <= 1:
+            return None
+        from vllm.utils.deep_gemm import PAGED_MQA_PAGE_SIZES
+
+        # kpool paged-MQA indexer: the storage block (block_size /
+        # index_kpool) is virtually split into pool pages, so block_size
+        # must be a multiple of index_kpool times a legal pool page.
+        page = min(PAGED_MQA_PAGE_SIZES)
+        if cls.is_device_capability_family(120):
+            # On sm120 the DeepGEMM paged-MQA kernel only accepts block_kv
+            # 64 for the fp8 indexer cache, so align to the largest pool
+            # page here to make the page split land on 64 not the min 32.
+            page = max(PAGED_MQA_PAGE_SIZES)
+        return index_kpool * page
+
+    @classmethod
     def get_attn_backend_cls(
         cls,
         selected_backend: "AttentionBackendEnum | None",
@@ -471,8 +497,11 @@ class MacaPlatformBase(Platform):
                     device_capability=device_capability,
                     **attn_selector_config._asdict(),
                 )
-            except ImportError:
-                invalid_reasons = ["ImportError"]
+            except (ImportError, OSError) as e:
+                raise ValueError(
+                    f"Selected backend {selected_backend} is not valid for "
+                    f"this configuration. Reason: [{type(e).__name__}: {e}]"
+                ) from e
             if invalid_reasons:
                 raise ValueError(
                     f"Selected backend {selected_backend} is not valid for "
@@ -721,7 +750,10 @@ class MacaPlatformBase(Platform):
             rms_norm = ["oink"] + default
 
         return IrOpPriorityConfig.with_default(
-            default, rms_norm=rms_norm, fused_add_rms_norm=rms_norm
+            default,
+            rms_norm=rms_norm,
+            fused_add_rms_norm=rms_norm,
+            gelu_and_mul_sparse=["triton", "native"],
         )
 
     @classmethod

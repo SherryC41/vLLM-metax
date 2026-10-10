@@ -210,6 +210,9 @@ def bf16_mqa_logits(
     The installed MetaX DeepGEMM non-paged BF16 kernel is numerically
     incorrect on C500. Use our GPU fallback until that kernel is validated.
     """
+    # from vllm_metax.v1.attention.ops.bf16_mqa_logits import bf16_mqa_logits as fallback
+
+    # return fallback(q, kv, weights, cu_seqlen_ks, cu_seqlen_ke)
     _lazy_init()
     if _bf16_mqa_logits_impl is None:
         return _missing()
@@ -229,11 +232,9 @@ def bf16_paged_mqa_logits(
     """Compute BF16 MQA logits using paged KV-cache.
 
     Args:
-        q_bf16: Query tensor of shape [B, next_n, H, D]. Casted to
-            `torch.float16` by caller.
-        kv_cache_bf16: Paged KV-cache in packed BF16+scale layout with shape
-            [num_blocks, block_size, 1, D+4], dtype `torch.uint8`. The last
-            4 bytes per (block,pos) store the `float` dequant scale.
+        q_bf16: BF16 query tensor of shape [B, next_n, H, D].
+        kv_cache_bf16: BF16 cache [num_blocks, block_size, 1, D], with no
+            scale tail. Page strides may include other layers' storage.
         weights: Contiguous tensor of shape [B * next_n, H], dtype
             `torch.float32` or `torch.bfloat16`.
         context_lens: Contiguous INT32 tensor with shape [B, next_n] (one

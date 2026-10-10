@@ -513,7 +513,6 @@ def _decode_grouped_att_m_fwd(
 
     BLOCK = 32
 
-    # [TODO] work around shmem limit on MI3xx
     # /------------------------- Metax Modification -------------------------\
     if is_maca_:
         BLOCK = 16

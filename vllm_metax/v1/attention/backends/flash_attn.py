@@ -77,7 +77,10 @@ from vllm.v1.attention.backends.utils import (
     reshape_attn_output_for_spec_decode,  # used for prefill decode split with mtp
     reshape_query_for_spec_decode,  # used for prefill decode split with mtp
 )
-from vllm.v1.kv_cache_interface import AttentionSpec, KVCacheSpec
+from vllm.v1.kv_cache_interface import (
+    AttentionSpec,
+    KVCacheSpec,
+)
 from vllm.v1.worker.cp_utils import (
     should_skip_dcp_context_attention,
     should_split_fa2_dcp_context_attention,
@@ -118,6 +121,12 @@ class MacaFlashAttentionBackend(AttentionBackend):
     @staticmethod
     def get_name() -> str:
         return "FLASH_ATTN"
+
+    @classmethod
+    def supports_rswa(cls) -> bool:
+        # MetaX FA2 cannot express the prefix-visible R-SWA mask. Let the
+        # selector choose the Triton/Flex implementation instead.
+        return False
 
     @classmethod
     def supports_sliding_window(cls) -> bool:
@@ -470,7 +479,7 @@ class FlashAttentionMetadataBuilder(AttentionMetadataBuilder[FlashAttentionMetad
             qkv_dtype = current_platform.fp8_dtype()
         else:
             qkv_dtype = self.kv_cache_dtype
-        return get_scheduler_metadata(
+        return get_scheduler_metadata(  # type: ignore[func-returns-value]
             batch_size=batch_size,
             max_seqlen_q=max_query_len,
             max_seqlen_k=max_seq_len,
@@ -640,6 +649,8 @@ class FlashAttentionMetadataBuilder(AttentionMetadataBuilder[FlashAttentionMetad
 
         # R-SWA: persistent CUDA-graph-safe buffers owned by this builder.
         self.rswa_window: int | None = self.model_config.rswa_window
+        if self.rswa_window is not None:
+            raise NotImplementedError("MetaX FlashAttention does not support R-SWA")
         self.persistent_rswa_prefix_lens: torch.Tensor | None = None
         self.persistent_rswa_window_tensor: torch.Tensor | None = None
         if self.rswa_window is not None:
@@ -778,10 +789,12 @@ class FlashAttentionMetadataBuilder(AttentionMetadataBuilder[FlashAttentionMetad
             split_prefill_seq_lens = common_attn_metadata.seq_lens[
                 split_decode_num_reqs:num_reqs
             ]
-            split_prefill_seq_lens_cpu = common_attn_metadata.seq_lens_cpu[
-                split_decode_num_reqs:num_reqs
-            ]
-            split_prefill_max_seq_len = int(split_prefill_seq_lens_cpu.max().item())
+            seq_lens_cpu = common_attn_metadata.seq_lens_cpu_upper_bound
+            split_prefill_max_seq_len = (
+                int(seq_lens_cpu[split_decode_num_reqs:num_reqs].max().item())
+                if seq_lens_cpu is not None
+                else common_attn_metadata.max_seq_len
+            )
             split_prefill_block_table = common_attn_metadata.block_table_tensor[
                 split_decode_num_reqs:num_reqs
             ]
@@ -896,6 +909,7 @@ class FlashAttentionMetadataBuilder(AttentionMetadataBuilder[FlashAttentionMetad
                     dtype=torch.int32,
                     out=self._dcp_context_cu_seqlens_k[1 : num_reqs + 1],
                 )
+                # Note(Metax): maca need it as its varlen func
                 dcp_context_cu_seqlens_k = self._dcp_context_cu_seqlens_k[
                     : num_reqs + 1
                 ]
@@ -1080,6 +1094,7 @@ class FlashAttentionMetadataBuilder(AttentionMetadataBuilder[FlashAttentionMetad
 
 class FlashAttentionImpl(AttentionImpl):
     can_return_lse_for_decode: bool = True
+    supports_dcp: bool = True
 
     def __init__(
         self,
