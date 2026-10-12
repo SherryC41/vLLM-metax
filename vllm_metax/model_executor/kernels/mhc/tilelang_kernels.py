@@ -53,6 +53,12 @@ def compute_num_split(block_k: int, k: int | None, grid_size: int) -> int:
     return split_k
 
 
+def compute_mhc_pre_num_splits(input_size: int, num_tokens: int) -> int:
+    splits = compute_num_split(64, input_size, cdiv(num_tokens, 64))
+    # Bound both GEMM and fused-normalization specializations during startup.
+    return 1 if splits == 1 else 4 if splits <= 4 else 16
+
+
 # ``mhc_fused_tilelang`` splits the hidden size across a fixed thread block, so
 # every (tile_n, n_thr) pair is one more kernel to compile. Tuned on GB300
 # (hc_mult 4, hidden_size 5120 and 7168) against the separate post + split-k
@@ -153,7 +159,11 @@ def mhc_pre_big_fuse_tilelang(
     rms_numel: int = 0,
     write_aux: bool = False,
 ):
-    """Deeply fused kernels, everything other than gemm & sqrsum in mHC pre block."""
+    """Fuse coefficient generation and residual collapse after the projection.
+
+    With save_pre_mix, store the new pre-mix and collapse with pre_mix_in,
+    or select stream zero when use_pre_mix_in is false.
+    """
     num_tokens = T.dynamic("num_tokens")
     hc_mult3 = hc_mult * (2 + hc_mult)
     hidden_block = math.gcd(512, hidden_size)
@@ -1384,7 +1394,7 @@ class MhcPreBigFuseTileLangKernel(
         **compile_key_fields: float,
     ) -> CompileKey:
         pre_gemm_n_splits = (
-            compute_num_split(64, pre_gemm_k, (num_tokens + 63) // 64)
+            compute_mhc_pre_num_splits(pre_gemm_k, num_tokens)
             if use_pre_gemm_splits
             else n_splits
         )

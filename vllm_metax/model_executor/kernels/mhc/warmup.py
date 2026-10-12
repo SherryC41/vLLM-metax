@@ -7,19 +7,12 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from vllm_metax.model_executor.kernels.mhc.tilelang_kernels import (
-    compute_num_split,
+    compute_mhc_pre_num_splits,
     mhc_pre_big_fuse_with_norm_tilelang,
 )
 from vllm.model_executor.warmup.jit_warmup import VllmJitKernel
 from vllm.platforms import current_platform
 from vllm_metax.utils.deep_gemm import is_deep_gemm_supported
-from vllm.utils.math_utils import cdiv
-
-
-def compute_mhc_pre_num_splits(input_size: int, num_tokens: int) -> int:
-    splits = compute_num_split(64, input_size, cdiv(num_tokens, 64))
-    # Bound both GEMM and fused-normalization specializations during startup.
-    return 1 if splits == 1 else 4 if splits <= 4 else 16
 
 
 class MHCPreNormKernel(VllmJitKernel["MHCPreNormKernel.CompileKey"]):
