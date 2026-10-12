@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 
-from vllm.config import get_current_vllm_config
 from vllm.config.quantization import QuantSpec
 from vllm.model_executor.layers.fused_moe import (
     RoutedExperts,
@@ -17,16 +16,12 @@ from vllm.model_executor.layers.quantization.utils.quant_utils import (
     kMxfp8Static,
 )
 
-from vllm.model_executor.layers.quantization import register_quantization_config
 from vllm_metax.registry.quant_config.fp8 import MacaFp8Config
 
 from vllm.models.deepseek_v4.quant_config import DeepseekV4FP8Config
 from vllm.models.deepseek_v41.quant_config import (
     DeepseekV4FP8Config as DeepseekV41FP8Config,
 )
-
-
-model_type = get_current_vllm_config().model_config.hf_config.model_type
 
 
 class MacaDeepseekV4FP8Config(DeepseekV4FP8Config, MacaFp8Config):
@@ -86,7 +81,10 @@ class MacaDeepseekV41FP8Config(DeepseekV41FP8Config, MacaFp8Config):
         return super().get_quant_method(layer, prefix)
 
 
-if model_type == "deepseek_v4":
-    register_quantization_config("deepseek_v4", MacaDeepseekV4FP8Config)
-elif model_type == "deepseek_v41":
-    register_quantization_config("deepseek_v4", MacaDeepseekV41FP8Config)
+# NOTE(metax): delay registry to platform.py
+# model_type = get_current_vllm_config().model_config.hf_config.model_type
+
+# if model_type == "deepseek_v4":
+#     register_quantization_config("deepseek_v4", MacaDeepseekV4FP8Config)
+# elif model_type == "deepseek_v41":
+#     register_quantization_config("deepseek_v4", MacaDeepseekV41FP8Config)

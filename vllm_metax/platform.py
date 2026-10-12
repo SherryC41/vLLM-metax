@@ -413,10 +413,32 @@ class MacaPlatformBase(Platform):
                     {"n_predict": n_predict, "architectures": ["DeepSeekMTPModel"]}
                 )
 
+        # -------------------------------------------------------
+        # NOTE(metax): Disable JIT warmup for Maca platform, as it may cause issues with some models
         if kernel_config := vllm_config.kernel_config:
-            kernel_config.enable_jit_warmup = False
+            kernel_config.enable_jit_warmup = True
             kernel_config.enable_cutedsl_warmup = False
             kernel_config.enable_flashinfer_autotune = False
+
+        # -------------------------------------------------------
+        #
+        if model_config is not None and model_config.hf_config.model_type in (
+            "deepseek_v4",
+            "deepseek_v41",
+        ):
+            from vllm_metax.registry.quant_config.deepseek_fp8 import (
+                MacaDeepseekV4FP8Config,
+                MacaDeepseekV41FP8Config,
+            )
+            from vllm.model_executor.layers.quantization import (
+                register_quantization_config,
+            )
+
+            model_type = model_config.hf_config.model_type
+            if model_type == "deepseek_v4":
+                register_quantization_config("deepseek_v4")(MacaDeepseekV4FP8Config)
+            elif model_type == "deepseek_v41":
+                register_quantization_config("deepseek_v4")(MacaDeepseekV41FP8Config)
 
     @classmethod
     def get_current_memory_usage(
@@ -1081,6 +1103,11 @@ mx_envs.maybe_override_vllm_env(
     "USE_DEEP_GEMM_E8M0 default to false on Maca platform",
 )
 
+mx_envs.maybe_override_vllm_env(
+    "VLLM_DEEP_GEMM_WARMUP",
+    "skip",
+    "Skip deep gemm warmup on Maca platform to avoid potential issues with some models",
+)
 
 # --------------------------------------------------
 # Note: vllm_metax currently does not support third-party
