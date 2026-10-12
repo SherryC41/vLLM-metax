@@ -4,22 +4,109 @@
 # -----------------------------------------------------------------------------
 # Note: Provide the shared patch decorator used to install module and class
 #     replacements, preserve descriptors, record original attributes and reject
-#     duplicate patches. This is patch infrastructure, not an upstream behavior
-#     replacement.
+#     duplicate patches. Rebind loaded vLLM aliases by identity so callers reach
+#     the installed export. This is infrastructure, not an upstream bug fix.
 #
-# Affected versions: MetaX patch infrastructure with vLLM 0.29.1.dev0
-#     (98dff2a81d), verified 2026-09-17.
+# Affected versions: MetaX patch infrastructure with vLLM 0.30.0
+#     (ced6857afa0e), reviewed 2026-10-12.
 #
 # Remove at: All MetaX runtime patches migrate to native upstream extension points or
 #     another shared installer, leaving no callers of this utility.
 # -----------------------------------------------------------------------------
 
-"""Shared helpers for installing vLLM-MetaX runtime patches."""
+r"""Shared helpers for installing vLLM-MetaX runtime patches.
+
+Installation flow (also documented in patch/README.md)::
+
+                     +--------------------------------------------+
+                     |   patch(module, attribute)(replacement)    |
+                     +--------------------------------------------+
+                                           |
+                                           v
+                          +----------------------------------+
+                          |    attribute contains a dot?     |
+                          +----------------------------------+
+                                           |
+                     +---------------------+---------------------+
+                     | no                                        | yes
+                     v                                           v
+    +----------------------------------+        +----------------------------------+
+    |         MODULE ATTRIBUTE         |        |         CLASS ATTRIBUTE          |
+    +----------------------------------+        +----------------------------------+
+                     |                                           |
+                     v                                           v
+    +----------------------------------+        +----------------------------------+
+    |       Resolve module/name        |        |       Resolve owner class        |
+    |      (infer name if absent)      |        |        and attribute name        |
+    +----------------------------------+        +----------------------------------+
+                     |                                           |
+                     v                                           v
+    +----------------------------------+        +----------------------------------+
+    |      Read original (static)      |        |     Read descriptor (static)     |
+    +----------------------------------+        +----------------------------------+
+                     |                                           |
+                     v                                           v
+    +----------------------------------+        +----------------------------------+
+    |      Check target state [A]      |        |      Reject duplicate patch      |
+    |      (may return or raise)       |        |                                  |
+    +----------------------------------+        +----------------------------------+
+                     |                                           |
+                     v                                           v
+    +----------------------------------+        +----------------------------------+
+    |         Record original          |        |        Rebuild descriptor        |
+    |        Set module export         |        |   method/static/class/property   |
+    |                                  |        |    (preserve setter/deleter)     |
+    +----------------------------------+        +----------------------------------+
+                     |                                           |
+                     v                                           v
+    +----------------------------------+        +----------------------------------+
+    |       If original existed:       |        |         Record original          |
+    |    sync loaded vllm.* aliases    |        |       Set class attribute        |
+    |  by same name + object identity  |        |                                  |
+    +----------------------------------+        +----------------------------------+
+                     |                                           |
+                     v                                           v
+    +----------------------------------+        +----------------------------------+
+    |   Return replacement unchanged   |        | Return installed class attribute |
+    |    (keep JIT/autotune object)    |        |                                  |
+    +----------------------------------+        +----------------------------------+
+
+Module target state [A]::
+
+                      +------------------------------------------+
+                      |  Same replacement AND automatic alias?   |
+                      +------------------------------------------+
+                                           |
+                     +---------------------+---------------------+
+                     | yes                                       | no
+                     v                                           v
+    +----------------------------------+        +----------------------------------+
+    |    Promote alias to explicit     |        |      Target is replacement       |
+    |      Keep recorded original      |        |       OR has patch marker?       |
+    |     Remove automatic marker      |        |                                  |
+    |        Return immediately        |        |                                  |
+    +----------------------------------+        +----------------------------------+
+                                                                 |
+                                                       +---------+---------+
+                                                       | yes               | no
+                                                       v                   v
+                                                +--------------+    +--------------+
+                                                | RuntimeError |    |   Continue   |
+                                                |              |    | installation |
+                                                +--------------+    +--------------+
+
+Missing targets raise AttributeError unless allow_missing=True. Alias scans
+visit only loaded vllm.* modules and update same-name exports that still refer
+to the identical original object; they record metadata without recursive patch
+calls. Class aliases already share the owner, so class-attribute patches do not
+scan module exports. Renamed exports and MetaX's captured originals are preserved.
+"""
 
 from __future__ import annotations
 
 import importlib
 import inspect
+import sys
 from collections.abc import Callable
 from typing import Any, TypeVar, cast
 
@@ -28,7 +115,40 @@ PatchTarget = TypeVar("PatchTarget")
 # The marker identifies an installed patch and maps each target name to the
 # original attribute that was replaced there.
 PATCH_MARKER = "__vllm_metax_patch__"
+# Track automatic bindings separately so a stacked decorator can explicitly
+# name one once without losing its original object or accepting duplicate targets.
+_ALIAS_PATCH_MARKER = "__vllm_metax_patch_aliases__"
 _MISSING = object()
+
+
+def _repoint_loaded_aliases(
+    attribute_name: str, original: Any, replacement: Any
+) -> None:
+    """Update vLLM modules that bound a module export before patch installation.
+
+    Future imports resolve the replacement through its defining module. Inspect
+    existing module dictionaries directly so lazy attribute hooks are not invoked;
+    identity checks leave unrelated exports with the same name untouched.
+
+    A caller loaded via ``from vllm.some_module import target`` before patching
+    keeps the old function object even after ``some_module.target`` is replaced.
+    Module-attribute installation calls this helper automatically. Alias updates
+    record their original objects without recursively invoking the decorator.
+    For example, all_reduce_utils.CudaRTLibrary must follow the MACA replacement even
+    when all_reduce_utils was imported first during model-module initialization.
+    """
+    for module_name, module in list(sys.modules.items()):
+        if module is None or not module_name.startswith("vllm."):
+            continue
+        if vars(module).get(attribute_name, _MISSING) is original:
+            full_target_name = f"{module_name}.{attribute_name}"
+            _record_original_attribute(replacement, full_target_name, original)
+            alias_targets = getattr(replacement, _ALIAS_PATCH_MARKER, None)
+            if alias_targets is None:
+                alias_targets = set()
+                setattr(replacement, _ALIAS_PATCH_MARKER, alias_targets)
+            alias_targets.add(full_target_name)
+            setattr(module, attribute_name, replacement)
 
 
 def _record_original_attribute(
@@ -113,6 +233,19 @@ def _patch_module_attribute(
             allow_missing,
         )
 
+        # An inner decorator can already have updated this target as an alias.
+        # Promote it to an explicit target once, retaining its original metadata.
+        # Repeating an explicit target still fails the duplicate check below.
+        alias_targets: set[str] = getattr(
+            replacement_attribute, _ALIAS_PATCH_MARKER, set()
+        )
+        if (
+            original_attribute is replacement_attribute
+            and full_target_name in alias_targets
+        ):
+            alias_targets.remove(full_target_name)
+            return replacement_attribute
+
         if original_attribute is not _MISSING:
             _raise_if_already_patched(
                 original_attribute,
@@ -126,6 +259,10 @@ def _patch_module_attribute(
             original_attribute,
         )
         setattr(target_module, resolved_attribute_name, replacement_attribute)
+        if original_attribute is not _MISSING:
+            _repoint_loaded_aliases(
+                resolved_attribute_name, original_attribute, replacement_attribute
+            )
         return replacement_attribute
 
     return install_module_patch
@@ -249,9 +386,17 @@ def patch(
     ``target_attribute_name`` selects one of two independent implementations:
 
     - a direct or inferred name uses the module-attribute path, which installs
-      the replacement unchanged and supports Triton JIT/autotune objects;
+      the replacement unchanged and supports Triton JIT/autotune objects. It
+      also updates same-name exports in loaded ``vllm.*`` modules when they
+      still reference the original object;
     - a dotted path such as ``"TargetClass.method"`` uses the class-method path,
       which resolves the class internally and preserves method descriptors.
+
+    Automatically updated aliases may also be explicit stacked targets. Their
+    first explicit installation preserves the already-recorded original object;
+    a second explicit installation raises ``RuntimeError`` as usual. Class
+    aliases share their owner and need no module-export synchronization when
+    patching a method or property on that class.
     """
     if not isinstance(target_module_path, str) or not target_module_path:
         raise TypeError("target_module_path must be a non-empty module import path")

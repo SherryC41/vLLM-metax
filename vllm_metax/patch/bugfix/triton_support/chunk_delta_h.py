@@ -7,7 +7,7 @@
 # Note: Reduce Triton `num_stages` in `chunk_delta_h` kernels to stay within
 #       MACA shared-memory limits.
 #
-# Affected versions: vLLM 0.29.1.dev0 (98dff2a81d), verified 2026-09-17.
+# Affected versions: vLLM 0.30.0 (ced6857afa0e), reviewed 2026-10-12.
 #
 # Remove at: Upstream autotuning selects configurations within MACA shared-memory
 #     limits.

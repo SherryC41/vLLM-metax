@@ -8,7 +8,7 @@
 # Note: Dequantize Qwen3.5 MTP shared-expert gates that were quantized in the
 #       checkpoint despite being excluded by its quantization configuration.
 #
-# Affected versions: vLLM 0.29.1.dev0 (98dff2a81d), verified 2026-09-17.
+# Affected versions: vLLM 0.30.0 (ced6857afa0e), reviewed 2026-10-12.
 #
 # Remove at: Affected checkpoints stop quantizing ignored MTP shared-expert gates, or
 #     upstream supports dequantizing those gates during loading.

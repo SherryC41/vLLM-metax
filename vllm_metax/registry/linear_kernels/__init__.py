@@ -3,3 +3,4 @@
 from . import mp  # noqa: F401
 from . import int8  # noqa: F401
 from . import fp8  # noqa: F401
+from . import mxfp8  # noqa: F401

@@ -5,8 +5,8 @@
 # Note: Expose the shared patch decorator for MetaX runtime compatibility modules. This
 #     package initializer is infrastructure and does not install patches itself.
 #
-# Affected versions: MetaX patch infrastructure with vLLM 0.29.1.dev0
-#     (98dff2a81d), verified 2026-09-17.
+# Affected versions: MetaX patch infrastructure with vLLM 0.30.0
+#     (ced6857afa0e), reviewed 2026-10-12.
 #
 # Remove at: No MetaX runtime patch modules import the package-level patch decorator.
 # -----------------------------------------------------------------------------

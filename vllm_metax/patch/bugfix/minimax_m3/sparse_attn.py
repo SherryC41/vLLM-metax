@@ -12,10 +12,13 @@
 #         tile: load K -> QK -> softmax -> load V -> PV
 #               (m_i, lse_i, acc_o) ----------------> next tile
 #
-#       Only the inner K/V loop changes; common's cache layout, FP8 scales,
-#       top-k handling, and decode split-K logic are preserved.
+#       Floor the prefill head tile at 16 for MACA's MMA encoder, and subdivide
+#       the inner K/V loop. Cache layout, FP8 scales, top-k handling, causal
+#       masking and decode split-K logic are preserved. For a 17-token visible
+#       range, the first sub-tile attends to positions 0..15 and the next to
+#       position 16; positions 17..127 contribute zero softmax weight.
 #
-# Affected versions: vLLM 0.29.1.dev0 (98dff2a81d), verified 2026-09-17.
+# Affected versions: vLLM 0.30.0 (ced6857afa0e), reviewed 2026-10-12.
 #
 # Remove at: Upstream adopts sub-tiling or the MetaX shared-memory limit permits the
 #     original 128-token K/V tile.
@@ -43,7 +46,7 @@ from vllm_metax.patch.utils import patch
             args["BLOCK_SIZE_Q"]
             * max(16, triton.next_power_of_2(args["gqa_group_size"]))
         ),
-        # Largest power-of-two <= 128 that keeps both GEMM tiles >= 16:
+        # Use 16-token sub-tiles to bound shared memory and satisfy MMA limits:
         #   BLOCK_SIZE_H (>= gqa) x SUB_K >= 16  and  SUB_K x BLOCK_SIZE_D (>= 16).
         "SUB_K": lambda args: 16,
     }
@@ -227,7 +230,7 @@ def _gqa_sparse_fwd_kernel(
         ),
         "BLOCK_SIZE_D": lambda args: triton.next_power_of_2(args["head_dim"]),
         # /-------------------- MetaX Modification --------------------\
-        # Largest power-of-two <= 128 keeping both GEMM tiles >= 16:
+        # Use 16-token sub-tiles to bound shared memory and satisfy MMA limits:
         #   BLOCK_SIZE_H (>= max(16,gqa)) x SUB_K >= 16  and  SUB_K x BLOCK_SIZE_D (>= 16).
         "SUB_K": lambda args: 16,
         # \-------------------- MetaX Modification --------------------/

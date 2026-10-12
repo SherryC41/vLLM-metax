@@ -3,9 +3,11 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 #
 # -----------------------------------------------------------------------------
-# Note: fix MiniMax-M3-FP8 weight load
+# Note: Preserve MiniMax-M3 block-FP8 inverse scales when fused or expert
+#       parameters expose weight_scale_inv. Keep upstream's weight_scale rename
+#       for MXFP8 destinations, rather than suppressing it for every checkpoint.
 #
-# Affected versions: vLLM 0.29.1.dev0 (98dff2a81d), verified 2026-09-17.
+# Affected versions: vLLM 0.30.0 (ced6857afa0e), reviewed 2026-10-12.
 #
 # Remove at: Upstream weight loading preserves weight_scale_inv for block-FP8 parameters
 #     on MetaX.
@@ -53,13 +55,26 @@ def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
             continue
         # The checkpoint stores block scales as ``weight_scale_inv``; the
         # ModelOpt MXFP8 layers expose them as ``weight_scale``.
-        # ------------------------  Metax Modification -------------------------
-        # Metax(note): The checkpoint stores block scales as ``weight_scale_inv``,
-        # and the FP8 layers also expose them as ``weight_scale_inv``.
-        # There is no need for conversion here.
-        # if "weight_scale_inv" in name:
-        #     name = name.replace("weight_scale_inv", "weight_scale")
-        # -------------------------------------------- -------------------------
+        # /-------------------- MetaX Modification --------------------\
+        # Preserve inverse-scale names only when the destination actually exposes
+        # them, including fused projections and experts. MXFP8 parameters still
+        # need upstream's rename: q_proj.weight_scale_inv becomes
+        # qkv_proj.weight_scale, while block-FP8 keeps qkv_proj.weight_scale_inv.
+        if "weight_scale_inv" in name:
+            inverse_scale_names = [name]
+            inverse_scale_names.extend(
+                name.replace(weight_name, param_name)
+                for param_name, weight_name, _ in stacked_params_mapping
+                if weight_name in name
+            )
+            inverse_scale_names.extend(
+                name.replace(weight_name, param_name)
+                for param_name, weight_name, _, _ in expert_params_mapping
+                if weight_name in name
+            )
+            if not any(candidate in params_dict for candidate in inverse_scale_names):
+                name = name.replace("weight_scale_inv", "weight_scale")
+        # \-------------------- MetaX Modification --------------------/
         for param_name, weight_name, shard_id in stacked_params_mapping:
             if weight_name not in name:
                 continue

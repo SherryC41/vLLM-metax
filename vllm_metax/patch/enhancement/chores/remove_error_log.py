@@ -3,9 +3,10 @@
 #
 # -----------------------------------------------------------------------------
 # Note: Select MetaX FlashAttention 2 without probing NVIDIA implementations, while
-#     accepting the current upstream version-selection arguments.
+#     accepting the current upstream version-selection arguments. Rebind loaded
+#     callers such as mm_encoder_attention that imported the old function.
 #
-# Affected versions: vLLM 0.29.1.dev0 (98dff2a81d), verified 2026-09-17.
+# Affected versions: vLLM 0.30.0 (ced6857afa0e), reviewed 2026-10-12.
 #
 # Remove at: Upstream FlashAttention version selection dispatches through the MetaX
 #     platform without probing NVIDIA implementations.
@@ -13,7 +14,7 @@
 
 """Select MetaX FlashAttention without probing NVIDIA implementations.
 
-Affected: vLLM 0.29.1.dev0 (98dff2a81d). Remove when upstream dispatches FA
+Affected: vLLM 0.30.0 (ced6857afa0e). Remove when upstream dispatches FA
 version selection through the platform. Keep its current keyword interface.
 """
 

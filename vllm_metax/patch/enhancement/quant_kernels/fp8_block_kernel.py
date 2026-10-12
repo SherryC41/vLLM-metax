@@ -4,7 +4,7 @@
 # -----------------------------------------------------------------------------
 # Note: Add plugin-aware scaled-MM kernel dispatch for MetaX.
 #
-# Affected versions: vLLM 0.29.1.dev0 (98dff2a81d), verified 2026-09-17.
+# Affected versions: vLLM 0.30.0 (ced6857afa0e), reviewed 2026-10-12.
 #
 # Remove at: Upstream register_linear_kernel supports fp8_block, allowing this entry to
 #     move to the normal MetaX kernel registry.

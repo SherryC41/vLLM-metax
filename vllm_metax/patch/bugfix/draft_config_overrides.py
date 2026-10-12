@@ -6,7 +6,7 @@
 #     already composes callable overrides but deliberately leaves dictionaries target-
 #     only; MetaX checkpoints need dictionary inheritance.
 #
-# Affected versions: vLLM 0.29.1.dev0 (98dff2a81d), verified 2026-09-17.
+# Affected versions: vLLM 0.30.0 (ced6857afa0e), reviewed 2026-10-12.
 #
 # Remove at: Upstream supports inheriting dictionary HF overrides when constructing
 #     draft model configs.
@@ -14,7 +14,7 @@
 
 """Propagate dictionary HF overrides to MetaX draft models.
 
-Affected: vLLM 0.29.1.dev0 (98dff2a81d). Upstream composes callable overrides,
+Affected: vLLM 0.30.0 (ced6857afa0e). Upstream composes callable overrides,
 but deliberately leaves dictionaries target-only. MetaX checkpoints still need
 the dictionary overrides. Remove when upstream supports opting into inheritance.
 """

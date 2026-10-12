@@ -5,7 +5,7 @@
 # Note: This patch is fix DeepSeek-V4 trap when use pipeline parallel,
 #       temporarily disable the optimization of use all_gather in send/recv
 #
-# Affected versions: vLLM 0.29.1.dev0 (98dff2a81d), verified 2026-09-17.
+# Affected versions: vLLM 0.30.0 (ced6857afa0e), reviewed 2026-10-12.
 #
 # Remove at: MACA pipeline send/recv safely supports the upstream all-gather
 #     optimization.

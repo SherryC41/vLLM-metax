@@ -3,8 +3,10 @@
 #
 # -----------------------------------------------------------------------------
 # Note: Provide a CUDA API compatibility wrapper backed by MetaX libraries.
+#     Rebind loaded aliases such as all_reduce_utils.CudaRTLibrary so they use
+#     MACA symbols and the MetaX IPC handle layout too.
 #
-# Affected versions: vLLM 0.29.1.dev0 (98dff2a81d), verified 2026-09-17.
+# Affected versions: vLLM 0.30.0 (ced6857afa0e), reviewed 2026-10-12.
 #
 # Remove at: Upstream CUDA runtime bindings support MACA library symbols and the
 #     128-byte IPC-handle ABI.

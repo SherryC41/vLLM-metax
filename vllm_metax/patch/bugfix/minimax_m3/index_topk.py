@@ -26,7 +26,7 @@
 #       to disable double-buffering (fits under the 64-KB ceiling), and
 #       floor `BLOCK_SIZE_Q` so `num_idx_heads * BLOCK_SIZE_Q >= 16`.
 #
-# Affected versions: vLLM 0.29.1.dev0 (98dff2a81d), verified 2026-09-17.
+# Affected versions: vLLM 0.30.0 (ced6857afa0e), reviewed 2026-10-12.
 #
 # Remove at: Upstream index-score launches satisfy MACA shared-memory and minimum MMA
 #     tile limits, or the MACA backend removes those restrictions.
@@ -55,7 +55,6 @@ from vllm.utils.math_utils import round_up
 from vllm_metax.patch.utils import patch
 
 
-@patch("vllm.models.minimax_m3.common.indexer", "minimax_m3_index_score")
 @patch("vllm.models.minimax_m3.common.ops.index_topk")
 @torch.no_grad()
 def minimax_m3_index_score(

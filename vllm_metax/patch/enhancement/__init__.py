@@ -5,7 +5,7 @@
 # Note: Load MetaX enhancement patches and registration hooks at plugin initialization.
 #     This initializer applies the patches by importing the child modules.
 #
-# Affected versions: vLLM 0.29.1.dev0 (98dff2a81d), verified 2026-09-17.
+# Affected versions: vLLM 0.30.0 (ced6857afa0e), reviewed 2026-10-12.
 #
 # Remove at: All enhancement patches imported here have been removed or migrated to
 #     native extension points.
@@ -22,4 +22,3 @@ from . import joyai_support  # noqa: F401
 from . import utils  # noqa: F401
 
 from . import dbo  # noqa: F401
-from . import deepseek_v41_support  # noqa: F401

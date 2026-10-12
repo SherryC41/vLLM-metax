@@ -3,9 +3,11 @@
 #
 # -----------------------------------------------------------------------------
 # Note: This patch is to relax platform check at SMControlContextManager.__init__,
-#       since MACA is CUDA-like and compatible with following code
+#       since MACA is CUDA-like and compatible with following code. Evaluate
+#       is_cuda_alike() as a boolean; calling its result raises TypeError before
+#       the compute/communication SM allocation can be initialized.
 #
-# Affected versions: vLLM 0.29.1.dev0 (98dff2a81d), verified 2026-09-17.
+# Affected versions: vLLM 0.30.0 (ced6857afa0e), reviewed 2026-10-12.
 #
 # Remove at: Upstream SM control accepts CUDA-like out-of-tree platforms.
 # -----------------------------------------------------------------------------
@@ -43,7 +45,7 @@ def __init__(
     # /-------------------- MetaX Modification --------------------\
     # MACA is CUDA-like and compatible with following code
 
-    assert current_platform.is_cuda_alike()(
+    assert current_platform.is_cuda_alike(), (
         "SM/CU control is supported on CUDA-like and ROCm platforms"
     )
     # \-------------------- MetaX Modification --------------------/

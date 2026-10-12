@@ -3,8 +3,10 @@
 #
 # -----------------------------------------------------------------------------
 # Note: Redirect NCCL and device-management utilities to MetaX equivalents.
+#     Update loaded aliases, including pynccl_wrapper.find_nccl_library, so
+#     importing the utilities before plugin activation cannot bypass discovery.
 #
-# Affected versions: vLLM 0.29.1.dev0 (98dff2a81d), verified 2026-09-17.
+# Affected versions: vLLM 0.30.0 (ced6857afa0e), reviewed 2026-10-12.
 #
 # Remove at: Upstream library and device-management discovery dispatches to MCCL and MX-
 #     SMI on MetaX.

@@ -6,7 +6,7 @@
 #     the shared dtype helper to cover both context paths while preserving upstream
 #     chunking, parallelism and FP8 handling.
 #
-# Affected versions: vLLM 0.29.1.dev0 (98dff2a81d), verified 2026-09-17.
+# Affected versions: vLLM 0.30.0 (ced6857afa0e), reviewed 2026-10-12.
 #
 # Remove at: Upstream _get_kv_b_proj_input_dtype preserves model-dtype activations for
 #     dynamically quantized INT8 weights.
@@ -14,7 +14,7 @@
 
 """Keep model-dtype activations for dynamically quantized INT8 MLA weights.
 
-Affected: vLLM 0.29.1.dev0 (98dff2a81d). Remove when the upstream dtype helper
+Affected: vLLM 0.30.0 (ced6857afa0e). Remove when the upstream dtype helper
 excludes INT8 weights. Patching the shared helper covers both context paths
 without replacing MLA's chunking, parallelism, or FP8 handling.
 """

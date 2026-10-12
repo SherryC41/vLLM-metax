@@ -6,7 +6,7 @@
 #     rebuilds it from vocab/merges and can lose the decoder and pre-tokenizer stored in
 #     tokenizer.json. Keep native initialization when no serialized file is supplied.
 #
-# Affected versions: Transformers 5.17.0, verified 2026-09-17.
+# Affected versions: Transformers 5.17.0 and 5.19.0; reviewed 2026-10-12.
 #
 # Remove at: Transformers Llama native-format conversion preserves the complete
 #     serialized tokenizer backend, including its decoder and pre-tokenizer.
@@ -14,7 +14,7 @@
 
 """Preserve serialized Llama tokenizer backends, including ByteLevel decoders.
 
-Affected: Transformers 5.17.0. Its native-format conversion reconstructs Llama
+Affected: Transformers 5.17.0 and 5.19.0. Native-format conversion reconstructs Llama
 backends from vocab/merges and loses tokenizer.json's decoder/pre-tokenizer.
 Remove when that conversion preserves the complete serialized backend.
 """

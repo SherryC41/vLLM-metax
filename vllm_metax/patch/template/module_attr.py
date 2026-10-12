@@ -46,8 +46,11 @@ Equivalent to:
     ------------------------------------------------------------------------------
 
 Stack ``@patch`` decorators if one implementation replaces multiple import
-locations. Use ``allow_missing=True`` only when intentionally adding an attribute;
-existing targets are required by default to catch misspelled paths.
+locations. Already-loaded same-name aliases in ``vllm.*`` modules are updated
+automatically by object identity, including aliases also named by a stacked
+decorator. Other exports and renamed aliases are left untouched. Use
+``allow_missing=True`` only when intentionally adding an attribute; existing
+targets are required by default to catch misspelled paths.
 
 For a Triton kernel, keep ``@patch`` outermost so it receives and installs the
 final JIT/autotune object::

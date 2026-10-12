@@ -9,7 +9,7 @@
 #       location via trust_remote_code. Re-inject the symbol so these
 #       custom tokenizers can be loaded.
 #
-# Affected versions: Transformers >= 5.0; verified with 5.17.0 on 2026-09-17.
+# Affected versions: Transformers >= 5.0; reviewed with 5.19.0 on 2026-10-12.
 #
 # Remove at: Affected remote tokenizer repositories stop importing bytes_to_unicode from
 #     the removed Transformers GPT-2 module path.
