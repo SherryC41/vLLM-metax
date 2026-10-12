@@ -488,7 +488,7 @@ def sparse_attn_indexer_bf16_fake(
 direct_register_custom_op(
     op_name="mx_sparse_attn_indexer_bf16",
     op_func=sparse_attn_indexer_bf16,
-    mutates_args=["topk_indices_buffer"],
+    mutates_args=["topk_indices_buffer", "candidate_blocks"],
     fake_impl=sparse_attn_indexer_bf16_fake,
     dispatch_key=current_platform.dispatch_key,
 )

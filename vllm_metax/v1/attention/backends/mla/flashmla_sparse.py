@@ -1475,9 +1475,11 @@ class FlashMLASparseImpl(
                 q, decode_topk if decode_topk is not None else topk_indices
             )
         else:
-            # Mixed or pure prefill: allocate output tensor
+            # NOTE(MetaX): upstream sizes this with self.num_heads, but when
+            # DCP > PCP the caller gathers TP heads before this method. Both
+            # kernels return those gathered heads; retain them until CP merge.
             attn_out = q.new_empty(
-                (num_mqa_tokens, self.num_heads, self.kv_lora_rank),
+                (num_mqa_tokens, q.shape[1], self.kv_lora_rank),
                 dtype=q.dtype,
                 device=q.device,
             )
