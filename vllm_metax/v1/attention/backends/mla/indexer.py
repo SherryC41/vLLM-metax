@@ -186,7 +186,7 @@ class PrepareUniformDecodeKernel(
         )
 
 
-class DeepseekV32IndexerBackend(AttentionBackend):
+class MacaDeepseekV32IndexerBackend(AttentionBackend):
     @classmethod
     def supports_pcp(cls) -> bool:
         return True
@@ -217,7 +217,7 @@ class DeepseekV32IndexerBackend(AttentionBackend):
         return DeepseekV32IndexerMetadataBuilder
 
 
-class KpoolTailBackend(DeepseekV32IndexerBackend):
+class KpoolTailBackend(MacaDeepseekV32IndexerBackend):
     """Storage-only backend for the GLM-5.3-Flash kpool tail cache."""
 
     @classmethod
@@ -241,7 +241,7 @@ class KpoolTailBackend(DeepseekV32IndexerBackend):
         return KpoolTailMetadataBuilder
 
 
-class DeepseekV4IndexerBackend(DeepseekV32IndexerBackend):
+class MacaDeepseekV4IndexerBackend(MacaDeepseekV32IndexerBackend):
     @staticmethod
     def get_name() -> str:
         return "DEEPSEEK_V4_INDEXER"
@@ -258,7 +258,7 @@ class DeepseekV4IndexerBackend(DeepseekV32IndexerBackend):
         return [256]
 
 
-class DeepseekV41IndexerBackend(DeepseekV4IndexerBackend):
+class MacaDeepseekV41IndexerBackend(MacaDeepseekV4IndexerBackend):
     @staticmethod
     def get_name() -> str:
         return "DEEPSEEK_V41_INDEXER"

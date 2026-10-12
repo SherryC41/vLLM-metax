@@ -62,7 +62,7 @@ from vllm.utils.multi_stream_utils import (
 )
 from vllm.v1.attention.backend import AttentionBackend, AttentionMetadata
 from vllm_metax.v1.attention.backends.mla.indexer import (
-    DeepseekV41IndexerBackend,
+    MacaDeepseekV41IndexerBackend as DeepseekV41IndexerBackend,
     dsa_indexer_uses_fp4,
     get_max_prefill_buffer_size,
 )
