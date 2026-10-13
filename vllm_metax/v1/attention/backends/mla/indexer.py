@@ -56,26 +56,22 @@ logger = init_logger(__name__)
 DSA_INDEXER_KV_DTYPES = ("bf16", "fp8", "mxfp4", "int8")
 
 
-def dsa_indexer_uses_fp4(vllm_config: VllmConfig) -> tuple[bool, bool]:
+def dsa_indexer_uses_fp4(vllm_config: VllmConfig) -> bool:
     """Whether the DeepSeek sparse indexer should use the MXFP4 K cache."""
-    kv_dtype = vllm_config.attention_config.resolve_indexer_kv_dtype("int8")
+    kv_dtype = vllm_config.attention_config.resolve_indexer_kv_dtype("fp8")
     if kv_dtype not in DSA_INDEXER_KV_DTYPES:
         raise ValueError(
             f"indexer_kv_dtype={kv_dtype!r} is not supported by the DeepSeek "
             f"sparse indexer (expected one of {DSA_INDEXER_KV_DTYPES})."
         )
-    # NOTE(MetaX): The registered FP8 indexer op is also gated by the MetaX
-    # feature flag; physical FP8 capability alone does not make it callable.
-    if kv_dtype == "fp8" and not (current_platform.supports_fp8()):
-        raise ValueError(
-            "indexer_kv_dtype='fp8' requires enabled MetaX FP8 support; "
-            "use 'auto' or 'bf16' on this device."
-        )
     use_fp4 = kv_dtype == "mxfp4"
-    use_int8 = kv_dtype == "int8"
-    if use_fp4:
-        raise ValueError("indexer_kv_dtype='mxfp4' requires higher compute capability.")
-    return use_fp4, use_int8
+    if use_fp4 and not current_platform.is_device_capability_family(100):
+        raise ValueError(
+            "indexer_kv_dtype='mxfp4' requires Blackwell datacenter GPUs "
+            "(sm_10x, e.g. B200/GB200); sm_120 (consumer Blackwell) and "
+            "earlier architectures are not supported."
+        )
+    return use_fp4
 
 
 class PrepareUniformDecodeKernel(
@@ -803,7 +799,7 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
             if self.vllm_config.speculative_config
             else 0
         )
-        self.indexer_uses_fp4, _ = dsa_indexer_uses_fp4(self.vllm_config)
+        self.indexer_uses_fp4 = dsa_indexer_uses_fp4(self.vllm_config)
 
         next_n = self.num_speculative_tokens + 1
         self.decode_threshold = next_n
