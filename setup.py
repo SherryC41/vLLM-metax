@@ -276,21 +276,27 @@ def get_maca_version() -> tuple[Version, str] | None:
     2. If not found, we try to get the version from Version.txt file in the MACA_PATH directory.
 
     Note: the version extracted from MACA_AI_VERSION or Version.txt file may not be a standard
-          version string. E.g. may be '3.8.0.3-c600u'. We need to parse it to a tuple with
+          version string. E.g. may be '3.8.0.3.c600u'. We need to parse it to a tuple with
           (Version, str) format.
     """
-    release_version_str = os.getenv("MACA_AI_VERSION")
-    if release_version_str is None:
+    maca_version_raw = os.getenv("MACA_AI_VERSION")
+    if maca_version_raw is None:
         file_full_path = os.path.join(os.getenv("MACA_PATH"), "Version.txt")
         if not os.path.isfile(file_full_path):
             return None
 
         with open(file_full_path, encoding="utf-8") as file:
-            release_version_str = file.readline().strip().split(":")[-1]
+            maca_version_raw = file.readline().strip().split(":")[-1]
 
-    maca_version = release_version_str.split("-")[0]
-    tag = release_version_str.split("-")[-1] if "-" in release_version_str else None
-    return parse(maca_version), tag
+    try:
+        release_version = parse(maca_version_raw)
+        tag = None
+    except Exception:
+        # If the version string is not a standard version, we try to parse it manually.
+        release_version = parse(".".join(maca_version_raw.split(".")[:-1]))
+        tag = maca_version_raw.split(".")[-1]
+
+    return release_version, tag
 
 
 def fixed_version_scheme(version: ScmVersion) -> str:
