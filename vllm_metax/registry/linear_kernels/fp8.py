@@ -71,12 +71,43 @@ class MctlassFp8BlockScaledMMKernel(CutlassFp8BlockScaledMMKernel):
             else params.weight_scale_inv
         )
         if weight_scale.dtype in (torch.uint8, torch.float8_e8m0fnu):
+            weight_scale = _upcast_e8m0_to_fp32(weight_scale.data.contiguous())
             replace_parameter(
                 layer,
                 params.WEIGHT_SCALE
                 if params.weight_scale_inv is None
                 else params.WEIGHT_SCALE_INV,
-                _upcast_e8m0_to_fp32(weight_scale.data.contiguous()),
+                weight_scale,
+            )
+
+        # Refer to: `deepgemm_post_process_fp8_weight_block`
+        # Reshape 2D weight/scale to 3D for grouped BMM (einsum):
+        # wq: (g*r, d) -> (g, r, d)
+        # Scale dimensions follow quant_block_shape.
+        if (
+            getattr(layer, "is_bmm", False)
+            and layer.weight_block_size == [128, 128]
+            and params.weight.ndim == 2
+        ):
+            groups = layer.bmm_batch_size
+            rows, cols = params.weight.shape
+            if groups <= 0 or rows % groups or (rows // groups) % 128:
+                raise ValueError("Grouped FP8 weight rows must align to 128 per group")
+            expected_shape = (rows // 128, (cols + 127) // 128)
+            if weight_scale.shape != expected_shape:
+                raise ValueError(
+                    f"Expected grouped FP8 scale shape {expected_shape}, "
+                    f"got {tuple(weight_scale.shape)}"
+                )
+            replace_parameter(
+                layer,
+                params.WEIGHT,
+                params.weight.reshape(groups, rows // groups, cols),
+            )
+            replace_parameter(
+                layer,
+                params.block_scale_attr,
+                weight_scale.reshape(groups, rows // groups // 128, -1),
             )
 
     def apply_block_scaled_mm(
