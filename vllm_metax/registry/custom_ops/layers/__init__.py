@@ -7,3 +7,4 @@ from . import minimax_rms_norm  # noqa: F401
 from . import rotary_embedding  # noqa: F401
 from . import mamba  # noqa: F401
 from . import mhc  # noqa: F401
+from . import quantization  # noqa: F401
