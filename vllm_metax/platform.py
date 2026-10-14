@@ -420,26 +420,6 @@ class MacaPlatformBase(Platform):
             kernel_config.enable_cutedsl_warmup = False
             kernel_config.enable_flashinfer_autotune = False
 
-        # -------------------------------------------------------
-        #
-        if model_config is not None and model_config.hf_config.model_type in (
-            "deepseek_v4",
-            "deepseek_v41",
-        ):
-            from vllm_metax.registry.quant_config.deepseek_fp8 import (
-                MacaDeepseekV4FP8Config,
-                MacaDeepseekV41FP8Config,
-            )
-            from vllm.model_executor.layers.quantization import (
-                register_quantization_config,
-            )
-
-            model_type = model_config.hf_config.model_type
-            if model_type == "deepseek_v4":
-                register_quantization_config("deepseek_v4")(MacaDeepseekV4FP8Config)
-            elif model_type == "deepseek_v41":
-                register_quantization_config("deepseek_v4")(MacaDeepseekV41FP8Config)
-
     @classmethod
     def get_current_memory_usage(
         cls, device: torch.types.Device | None = None

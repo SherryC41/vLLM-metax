@@ -2,7 +2,10 @@
 # 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-from vllm.model_executor.layers.quantization.mxfp4 import Mxfp4Config, Mxfp4MoEMethod
+from vllm.model_executor.layers.quantization.mxfp4 import (
+    Mxfp4Config,
+    Mxfp4MoEMethod as _vllm_Mxfp4MoEMethod,
+)
 from vllm.model_executor.layers.fused_moe import (
     FusedMoEConfig,
     FusedMoEMethodBase,
@@ -30,12 +33,12 @@ class MacaMxfp4Config(Mxfp4Config):
     def _make_moe_method(self, moe: FusedMoEConfig) -> FusedMoEMethodBase:
         """MoE method for RoutedExperts. Subclasses override to pick a
         checkpoint-specific kernel family."""
-        return MacaMxfp4MoEMethod(moe)
+        return Mxfp4MoEMethod(moe)
 
 
-class MacaMxfp4MoEMethod(Mxfp4MoEMethod):
+class Mxfp4MoEMethod(_vllm_Mxfp4MoEMethod):
     def __init__(self, moe: FusedMoEConfig):
-        super(Mxfp4MoEMethod, self).__init__(moe)
+        super(_vllm_Mxfp4MoEMethod, self).__init__(moe)
         self.weight_dtype = "mxfp4"
         self.mxfp4_backend = Mxfp4MoeBackend.TRITON
         self.experts_cls = backend_to_kernel_cls(self.mxfp4_backend)[0]

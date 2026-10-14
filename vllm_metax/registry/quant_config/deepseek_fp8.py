@@ -9,7 +9,7 @@ from vllm.model_executor.layers.fused_moe import (
     UnquantizedFusedMoEMethod,
 )
 from vllm.model_executor.layers.linear import LinearBase, UnquantizedLinearMethod
-from vllm.model_executor.layers.quantization.mxfp4 import Mxfp4MoEMethod
+from vllm_metax.registry.quant_config.mxfp4 import Mxfp4MoEMethod
 from vllm.model_executor.layers.quantization.utils.quant_utils import (
     is_layer_skipped,
     kMxfp8Dynamic,
@@ -18,16 +18,13 @@ from vllm.model_executor.layers.quantization.utils.quant_utils import (
 
 from vllm_metax.registry.quant_config.fp8 import MacaFp8Config
 
-from vllm.models.deepseek_v4.quant_config import DeepseekV4FP8Config
 from vllm.models.deepseek_v41.quant_config import (
     DeepseekV4FP8Config as DeepseekV41FP8Config,
 )
+from vllm.model_executor.layers.quantization import register_quantization_config
 
 
-class MacaDeepseekV4FP8Config(DeepseekV4FP8Config, MacaFp8Config):
-    pass
-
-
+@register_quantization_config("deepseek_v4_fp8")
 class MacaDeepseekV41FP8Config(DeepseekV41FP8Config, MacaFp8Config):
     def get_quant_method(self, layer, prefix):
         if (
@@ -67,24 +64,10 @@ class MacaDeepseekV41FP8Config(DeepseekV41FP8Config, MacaFp8Config):
                 return UnquantizedFusedMoEMethod(layer.moe_config)
             if self.expert_dtype == "fp4":
                 if self.moe_quant_algo == "NVFP4":
-                    from vllm.model_executor.layers.quantization.modelopt import (
-                        ModelOptNvFp4FusedMoE,
-                    )
-
-                    return ModelOptNvFp4FusedMoE(
-                        quant_config=self._get_nvfp4_config(),
-                        moe_config=layer.moe_config,
+                    raise NotImplementedError(
+                        "NVFP4 quantization is not supported in vLLM-metax."
                     )
                 return Mxfp4MoEMethod(layer.moe_config)
             # expert_dtype == "fp8": fall through to Fp8Config which
             # returns Fp8MoEMethod with block-wise float32 scales.
         return super().get_quant_method(layer, prefix)
-
-
-# NOTE(metax): delay registry to platform.py
-# model_type = get_current_vllm_config().model_config.hf_config.model_type
-
-# if model_type == "deepseek_v4":
-#     register_quantization_config("deepseek_v4", MacaDeepseekV4FP8Config)
-# elif model_type == "deepseek_v41":
-#     register_quantization_config("deepseek_v4", MacaDeepseekV41FP8Config)
