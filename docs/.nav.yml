@@ -8,7 +8,8 @@ nav:
     - Models:
       - models/supported_models.md
     - Release Notes:
-      - glob: release/*/README.md
+      - release/common/
+      - glob: release/[0-9]*/
         sort:
           direction: desc
   - Developer Guide:

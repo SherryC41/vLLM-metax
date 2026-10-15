@@ -6,10 +6,6 @@ exclude_docs: |
   argparse
   *.inc.md
   *.template.md
-# Language variants are reached through the release page buttons.
-not_in_nav: |
-  /release/*/en.md
-  /release/*/zh.md
 validation:
   links:
     absolute_links: relative_to_docs
@@ -56,6 +52,7 @@ theme:
 hooks:
   - docs/mkdocs/hooks/remove_announcement.py
   - docs/mkdocs/hooks/url_schemes.py
+  - docs/mkdocs/hooks/release_navigation.py
 
 plugins:
   - meta
