@@ -5,39 +5,60 @@
 # ruff: noqa
 # code borrowed from https://github.com/pytorch/pytorch/blob/main/torch/utils/collect_env.py
 
-import datetime
-import locale
-import os
-import subprocess
 import sys
 
-# Unlike the rest of the PyTorch this file must be python2 compliant.
-# This script outputs relevant system environment info
-# Run it with `python collect_env.py` or `python -m torch.utils.collect_env`
-from collections import namedtuple
+# NOTE(metax): Direct execution must not shadow stdlib platform with platform.py.
+if __name__ == "__main__" and not __package__ and sys.path:
+    sys.path.pop(0)
 
+import datetime
+import contextlib
+import importlib.metadata as metadata
+import importlib.util
+import locale
+import os
+from pathlib import Path
 import regex as re
+import shutil
+import subprocess
+from typing import TYPE_CHECKING
 
-try:
-    import vllm
-
-    VLLM_AVAILABLE = True
-except (ImportError, NameError, AttributeError, OSError):
-    VLLM_AVAILABLE = False
-
-try:
-    import vllm_metax
-
-    VLLM_METAX_AVAILABLE = True
-except (ImportError, NameError, AttributeError, OSError):
-    VLLM_METAX_AVAILABLE = False
-
-try:
+if TYPE_CHECKING:
+    # NOTE(metax): Declare the lazy runtime import without initializing it.
     import torch
 
-    TORCH_AVAILABLE = True
-except (ImportError, NameError, AttributeError, OSError):
-    TORCH_AVAILABLE = False
+# This script outputs relevant system environment info
+# Run it with `vllm_collect_env` or `python vllm_metax/collect_env.py`.
+from collections import namedtuple
+
+# NOTE(metax): Missing runtime packages must not prevent basic environment collection.
+VLLM_AVAILABLE = False
+VLLM_METAX_AVAILABLE = False
+TORCH_AVAILABLE = False
+
+
+def _load_runtime_packages():
+    global vllm, vllm_metax, torch
+    global VLLM_AVAILABLE, VLLM_METAX_AVAILABLE, TORCH_AVAILABLE
+    try:
+        import vllm
+
+        VLLM_AVAILABLE = True
+    except Exception:
+        VLLM_AVAILABLE = False
+    try:
+        import vllm_metax
+
+        VLLM_METAX_AVAILABLE = True
+    except Exception:
+        VLLM_METAX_AVAILABLE = False
+    try:
+        import torch
+
+        TORCH_AVAILABLE = True
+    except Exception:
+        TORCH_AVAILABLE = False
+
 
 # System Environment Information
 SystemEnv = namedtuple(
@@ -53,6 +74,10 @@ SystemEnv = namedtuple(
         "libc_version",
         "python_version",
         "python_platform",
+        "python_executable",
+        "python_prefix",
+        "python_base_prefix",
+        "python_environment",
         "is_cuda_available",
         "cuda_runtime_version",
         "maca_sdk_version",
@@ -119,7 +144,12 @@ def run(command):
         p = subprocess.Popen(
             command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=shell
         )
-        raw_output, raw_err = p.communicate()
+        try:
+            raw_output, raw_err = p.communicate(timeout=20)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            p.communicate()
+            return 124, "", "Command timed out"
         rc = p.returncode
         if get_platform() == "win32":
             enc = "oem"
@@ -168,17 +198,19 @@ def run_and_return_first_line(run_lambda, command):
 
 
 def get_conda_packages(run_lambda, patterns=None):
-    if patterns is None:
-        patterns = DEFAULT_CONDA_PATTERNS
     conda = os.environ.get("CONDA_EXE", "conda")
-    out = run_and_read_all(run_lambda, [conda, "list"])
+    # NOTE(metax): An inherited Conda prefix may belong to a uv venv's base Python.
+    if not Path(sys.prefix, "conda-meta").is_dir():
+        return ""
+    out = run_and_read_all(run_lambda, [conda, "list", "--prefix", sys.prefix])
     if out is None:
         return out
 
     return "\n".join(
         line
         for line in out.splitlines()
-        if not line.startswith("#") and any(name in line for name in patterns)
+        if not line.startswith("#")
+        and (patterns is None or any(name in line for name in patterns))
     )
 
 
@@ -222,7 +254,9 @@ def get_running_cuda_version(run_lambda):
 
 def get_maca_sdk_version(run_lambda):
     return run_and_parse_first_match(
-        run_lambda, "cat $MACA_PATH/Version.txt", r"Version:(.*)"
+        run_lambda,
+        ["cat", os.path.join(os.environ.get("MACA_PATH", "/opt/maca"), "Version.txt")],
+        r"Version:(.*)",
     )
 
 
@@ -287,7 +321,10 @@ def get_nvidia_smi():
 
 def get_vllm_version():
     if not VLLM_AVAILABLE:
-        return "N/A"
+        try:
+            return metadata.version("vllm")
+        except metadata.PackageNotFoundError:
+            return "N/A"
 
     from vllm import __version__, __version_tuple__
 
@@ -310,7 +347,10 @@ def get_vllm_version():
 
 def get_vllm_metax_version():
     if not VLLM_METAX_AVAILABLE:
-        return "N/A"
+        try:
+            return metadata.version("vllm-metax")
+        except metadata.PackageNotFoundError:
+            return "N/A"
 
     from vllm_metax import __version__, __version_tuple__
 
@@ -529,36 +569,43 @@ def get_libc_version():
 
 def get_pip_packages(run_lambda, patterns=None):
     """Return `pip list` output. Note: will also find conda-installed pytorch and numpy packages."""
-    if patterns is None:
-        patterns = DEFAULT_PIP_PATTERNS
 
-    def run_with_pip():
-        try:
-            import importlib.util
-
-            pip_spec = importlib.util.find_spec("pip")
-            pip_available = pip_spec is not None
-        except ImportError:
-            pip_available = False
-
-        if pip_available:
-            cmd = [sys.executable, "-mpip", "list", "--format=freeze"]
-        elif os.environ.get("UV") is not None:
-            print("uv is set")
-            cmd = ["uv", "pip", "list", "--format=freeze"]
-        else:
-            raise RuntimeError(
-                "Could not collect pip list output (pip or uv module not available)"
-            )
-
-        out = run_and_read_all(run_lambda, cmd)
-        return "\n".join(
-            line for line in out.splitlines() if any(name in line for name in patterns)
+    try:
+        pip_available = importlib.util.find_spec("pip") is not None
+    except (ImportError, ValueError):
+        pip_available = False
+    commands = []
+    if pip_available:
+        commands.append(
+            ("pip", [sys.executable, "-m", "pip", "list", "--format=freeze"])
         )
-
-    pip_version = "pip3" if sys.version[0] == "3" else "pip"
-    out = run_with_pip()
-    return pip_version, out
+    uv = shutil.which(os.environ.get("UV", "")) or shutil.which("uv")
+    if uv:
+        # NOTE(metax): uv need not set UV; bind its inventory to this interpreter.
+        commands.append(
+            ("uv", [uv, "pip", "list", "--python", sys.executable, "--format=freeze"])
+        )
+    for manager, command in commands:
+        output = run_and_read_all(run_lambda, command)
+        if output is not None:
+            return manager, "\n".join(
+                line
+                for line in output.splitlines()
+                if patterns is None
+                or any(name.lower() in line.lower() for name in patterns)
+            )
+    # NOTE(metax): A pip-free venv still exposes installed distribution metadata.
+    packages = sorted(
+        "{}=={}".format(
+            dist.metadata["Name"] if "Name" in dist.metadata else "", dist.version
+        )
+        for dist in metadata.distributions()
+    )
+    return "importlib.metadata", "\n".join(
+        line
+        for line in packages
+        if patterns is None or any(name.lower() in line.lower() for name in patterns)
+    )
 
 
 def get_cachingallocator_config():
@@ -568,7 +615,10 @@ def get_cachingallocator_config():
 
 def get_cuda_module_loading_config():
     if TORCH_AVAILABLE and torch.cuda.is_available():
-        torch.cuda.init()
+        try:
+            torch.cuda.init()
+        except (RuntimeError, OSError) as exc:
+            return "Could not collect: {}".format(exc)
         config = os.environ.get("CUDA_MODULE_LOADING", "")
         return config
     else:
@@ -585,25 +635,20 @@ def is_xnnpack_available():
 
 
 def get_env_vars():
-    try:
-        from vllm.envs import environment_variables as vllm_envs
-    except Exception as e:
-        print(e)
-        vllm_envs = {}
-
-    # 尝试导入插件环境变量
-    try:
-        from vllm_metax.envs import environment_variables as plugin_envs
-    except ImportError:
-        plugin_envs = {}
-
-    all_envs = vllm_envs | plugin_envs
-
     env_vars = ""
-    secret_terms = ("secret", "token", "api", "access", "password")
+    secret_terms = (
+        "secret",
+        "token",
+        "api",
+        "access",
+        "password",
+        "credential",
+        "auth",
+    )
     report_prefix = (
         "TORCH",
         "NCCL",
+        "MCCL",
         "PYTORCH",
         "CUDA",
         "CUBLAS",
@@ -611,12 +656,13 @@ def get_env_vars():
         "OMP_",
         "MKL_",
         "NVIDIA",
+        "VLLM_",
+        "MACA_",
     )
-    for k, v in os.environ.items():
+    # NOTE(metax): Reading environment names must not initialize unfinished plugins.
+    for k, v in sorted(os.environ.items()):
         if any(term in k.lower() for term in secret_terms):
             continue
-        if k in all_envs:
-            env_vars = env_vars + "{}={}".format(k, v) + "\n"
         if k.startswith(report_prefix):
             env_vars = env_vars + "{}={}".format(k, v) + "\n"
 
@@ -624,8 +670,11 @@ def get_env_vars():
 
 
 def get_env_info():
+    _load_runtime_packages()
     run_lambda = run
     pip_version, pip_list_output = get_pip_packages(run_lambda)
+
+    version_str = debug_mode_str = cuda_available_str = cuda_version_str = "N/A"
 
     if TORCH_AVAILABLE:
         version_str = torch.__version__
@@ -648,6 +697,10 @@ def get_env_info():
             sys_version, sys.maxsize.bit_length() + 1
         ),
         python_platform=get_python_platform(),
+        python_executable=sys.executable,
+        python_prefix=sys.prefix,
+        python_base_prefix=sys.base_prefix,
+        python_environment=get_python_environment(),
         is_cuda_available=cuda_available_str,
         cuda_compiled_version=cuda_version_str,
         cuda_runtime_version=get_running_cuda_version(run_lambda),
@@ -674,6 +727,17 @@ def get_env_info():
         gpu_topo=gpu_topo,
         env_vars=get_env_vars(),
     )
+
+
+def get_python_environment():
+    if sys.prefix != sys.base_prefix:
+        cfg = Path(sys.prefix) / "pyvenv.cfg"
+        if cfg.is_file() and re.search(r"(?m)^uv\s*=", cfg.read_text()):
+            return "uv venv"
+        return "venv"
+    if Path(sys.prefix, "conda-meta").is_dir():
+        return "Conda"
+    return "Global Python"
 
 
 env_info_fmt = """
@@ -704,6 +768,10 @@ CUDA used to build PyTorch   : {cuda_compiled_version}
 ==============================
 Python version               : {python_version}
 Python platform              : {python_platform}
+Python executable            : {python_executable}
+Environment                  : {python_environment}
+Python prefix                : {python_prefix}
+Base prefix                  : {python_base_prefix}
 
 ==============================
          vLLM Info
@@ -732,7 +800,7 @@ Is XNNPACK available         : {is_xnnpack_available}
 {cpu_info}
 
 ==============================
-Versions of relevant libraries
+Versions of installed libraries
 ==============================
 {pip_packages}
 {conda_packages}
@@ -841,7 +909,9 @@ def get_pretty_env_info():
 
 def main():
     print("Collecting environment information...")
-    output = get_pretty_env_info()
+    # NOTE(metax): Keep dependency initialization messages out of redirected reports.
+    with contextlib.redirect_stdout(sys.stderr):
+        output = get_pretty_env_info()
     print(output)
 
     if (
@@ -850,7 +920,11 @@ def main():
         and hasattr(torch.utils, "_crash_handler")
     ):
         minidump_dir = torch.utils._crash_handler.DEFAULT_MINIDUMP_DIR
-        if sys.platform == "linux" and os.path.exists(minidump_dir):
+        if (
+            sys.platform == "linux"
+            and os.path.isdir(minidump_dir)
+            and os.listdir(minidump_dir)
+        ):
             dumps = [
                 os.path.join(minidump_dir, dump) for dump in os.listdir(minidump_dir)
             ]

@@ -1,143 +1,171 @@
-# Mandatory Environment and Source Preflight
+# Mandatory environment and source preflight
 
-Complete this preflight when an upgrade skill invokes the common workflow, or when
-the user explicitly requests it. Establish which source is being reviewed, which
-copy will be edited, and which code tests will
-actually execute. A local source tree and its installed wheel are separate artifacts.
+Read this for every new or resumed upgrade run, including standalone specialist work.
+Collection is read-only environment preparation. Compatibility decisions, adaptation
+edits and runtime validation wait for the user's explicit snapshot confirmation.
 
-## Discover explicit inputs
+## Select inputs without importing MetaX
 
-1. Identify the requested Python executable. Inspect `sys.executable`, `sys.prefix`,
-   `sys.base_prefix`, and `pyvenv.cfg` through that executable. `VIRTUAL_ENV` and
-   `CONDA_PREFIX` are hints, not authority. A uv venv may legitimately use a Conda
-   base interpreter; resolving the Python symlink does not determine the active venv.
-2. Locate the local vLLM and vllm_metax repositories using user-provided paths or the
-   workspace. Confirm the expected package directories and Git roots. Do not assume
-   a sibling directory or the current working directory is the intended checkout.
-3. Choose the working directory used for the intended Python test or launch command.
-   Preserve the user's import-path configuration while inspecting it.
+Discover the intended Python, both source checkouts and validation cwd from the user
+and workspace. Inspect `sys.executable`, `sys.prefix`, `sys.base_prefix`, `pyvenv.cfg`
+and Conda metadata through that executable. `VIRTUAL_ENV`, `CONDA_PREFIX` and the current
+shell prompt are hints, not authority. A uv venv can legitimately use a Conda base;
+resolving a Python symlink does not identify the selected package environment.
 
-Run the probe with the selected Python. The paths below are examples, not defaults:
+Record discovered venv/Conda alternatives and identify which is selected. Dump installed
+packages from that selected interpreter, including missing/private packages; do not
+silently substitute global Conda's package list. If another environment will execute
+workers or tests, collect it separately and include that mapping in the confirmation.
+
+Use the selected interpreter for the CLI. For example, replace the executable and paths
+below with discovered choices, and choose a durable run directory:
 
 ```bash
-/opt/venv/bin/python .codex/skills/vllm-metax-upgrade-common/scripts/probe_environment.py \
+/opt/venv/bin/python tools/metax_upgrade/upgrade.py init \
+  --run-dir .metax-upgrade/release-upgrade \
   --vllm-source /workspace/vllm \
   --metax-source /workspace/vLLM-metax \
   --runtime-cwd /workspace/vLLM-metax \
-  > /tmp/metax-upgrade-environment.json
+  --scope "requested model and configuration matrix" --mode full
 ```
 
-The probe uses only the standard library and does not import vLLM or MetaX, load GPU
-libraries, modify packages, install dependencies, or change either repository. It
-prints metadata, Git state, top-level import resolution, and Python source hashes.
-Exit status 0 means the report was collected, not that every source matches.
+`init` collects immutable environment artifacts, preserves the initial source manifest
+and MetaX worktree archive, initializes state and renders TODO. Use `--mode full` for
+repository upgrades or `--mode component` for a deliberately limited standalone domain
+or review. Component completion makes no full-repository/e2e support claim.
+Use `refresh --run-dir ...` to collect an updated snapshot; use `resume --run-dir ...`
+when handing a run to another session. Read the `tools/metax_upgrade/README.md` and CLI `--help` for current arguments.
+Do not create a new run to conceal existing partial work or avoid a failed gate.
 
-For import resolution it models `python -c`/`python -m` with the specified working
-directory first on `sys.path`. This is not proof of resolution in a console script,
-pytest with another import mode, a Ray worker, or an engine subprocess. Confirm the
-effective paths inside the actual validation process once imports are available.
-Other `sys.path` entries come from probe startup. If `PYTHONPATH` contains relative
-paths or startup customization depends on cwd, launch the probe from the actual
-runtime directory, using the script's absolute path, rather than relying on cwd modeling.
+Each skill request independently collects current environment facts, even if another
+skill or earlier session already produced a report. Historical ENVIRONMENT reports,
+JSON snapshots and diagnostic text remain audit evidence; do not reuse them as current
+facts. The agent's independent standard-library inventory is
+`tools/metax_upgrade/environment.py`; it owns SDK/GPU/Python/package/source discovery,
+requirements comparison and the structured JSON snapshot. It must work before MetaX
+modules are adapted and without importing Torch/vLLM/MetaX. The existing
+`scripts/probe_environment.py` is a backwards-compatible wrapper around the tool's
+source-probe mode. Do not make this inventory depend on `collect_env.py` output or API.
 
-## Inspect the correspondence table
+Keep the selected MetaX checkout's `vllm_metax/collect_env.py`, exposed as
+`vllm_collect_env`, as the original human-readable supplement. Its entry follows
+`main -> get_pretty_env_info -> pretty_str`, accepts no CLI arguments, and prints to
+stdout. Activate the selected environment and use its matching console entry point:
 
-Record one row per package plus an interpreter row:
+```bash
+vllm_collect_env > environment.txt
+```
+
+If that entry point belongs to another installation, run the exact selected file:
+
+```bash
+/opt/venv/bin/python /workspace/vLLM-metax/vllm_metax/collect_env.py > environment.txt
+```
+
+Run this supplemental diagnostic in a separate subprocess. Record its command,
+interpreter/cwd, stdout, stderr and exit status. It may import runtime dependencies
+and fail while MetaX is unfinished; preserve that failure and continue the independent
+inventory. Never substitute upstream `vllm/collect_env.py`, parse this text as a required
+structured schema, or interpret successful collection as compatibility validation.
+
+Collect supplemental stdout or failure afresh for the current collection; no cache
+or cross-skill reuse is permitted. Ordinary identity checks use fresh independent facts
+and do not force execution of the supplemental collector. Agent `init`/`refresh` perform
+fresh full collection and save new immutable structured reports with that invocation's
+supplemental stdout or failure. Identity-only checks recollect current facts without
+running `collect_env.py`. Historical reports remain available for auditing and comparison only. Previously given
+confirmation may remain valid when newly collected identity and mappings are unchanged;
+this preserves approval semantics without treating old environment facts as current.
+
+## Required snapshot
 
 | Item | Required evidence |
 | --- | --- |
-| Python/venv | Executable, prefix/base prefix, version, venv configuration, cwd and relevant path overrides. |
-| Local vLLM | Repository and package paths, commit, dirty/untracked state, source manifest fingerprint. |
-| Installed vLLM | Distribution version, metadata location, installed package directory, installer, editable status and installation provenance where available. |
-| Local vllm_metax | Repository and package paths, commit, dirty/untracked state, source manifest fingerprint. |
-| Installed vllm_metax | Distribution version, metadata location, installed package directory, installer, editable status and installation provenance where available. |
-| Components | Distribution candidates and top-level origins for compressed-tensors, DeepGEMM, FlashAttention, FlashMLA, FlashInfer, MCOPLIB, Torch and Triton. Verify device/MACA/ABI and actual selected APIs separately. |
-| Effective imports | Resolved origins/search paths for both packages under the intended invocation, checked again in the actual process. |
-| Source correspondence | Matching, changed, missing, and install-only Python files; generated version files reported separately; explicit explanation for intentional differences. |
+| MACA | SDK installation/version, compiler/toolchain, runtime and driver versions/origins where discoverable; missing fields and probe failures. |
+| GPU | Exact model, device identifiers/count, visibility and available-device evidence; record validation device selections. |
+| Python | Executable, version, prefix/base prefix, venv/Conda identity, discovered alternatives, cwd and relevant path overrides. |
+| Packages | Full selected-environment metadata inventory; installed versions/origins compared with every requirement in `requirements/maca_private.txt`, including included files and markers if present. |
+| Local vLLM | Confirmed released target revision, repository/package paths, dirty state and source fingerprints. |
+| Installed vLLM | All distribution candidates, version, metadata/package location, editable/install provenance and effective resolution. |
+| Local MetaX | Initial revision/index/worktree snapshot, source fingerprints and checkout to edit. |
+| Installed MetaX | All distribution candidates, effective origins and source/wheel differences; this is unverified code. |
+| Components | Torch/Triton, attention/GEMM/communication and every private requirement's package identities, extension origins and ABI evidence when available. |
+| Collection details | This request's independent JSON snapshot and probe provenance; supplemental `collect_env.py` source/interpreter/cwd and newly collected stdout/stderr/status when executed. |
+| Runtime plan | Comparison source, edited checkout, actual validation/worker imports and any proposed process-local path adjustments. |
 
-Inspect all distributions found, not just the first metadata match. Multiple versions,
-user-site packages, `.pth` files, editable finders, `PYTHONPATH`, working-directory
-shadowing, and symlinks can cause metadata and imports to describe different copies.
-The report's distribution candidates can include local `.egg-info` as well as installed
-`.dist-info`; matching a local egg-info tree is not evidence that the wheel matches it.
-Do not dump unrestricted environment variables or credential-bearing provenance URLs.
+Parse requirements as data; never execute requirements or pip-install during collection.
+Do not limit package inventory to a hard-coded list: `maca_private.txt` is the source
+of required private-package coverage. Pin mismatches are explicit issues for confirmation
+and later capability checks, not an instruction to upgrade packages automatically.
+Unknown or unparsable requirements remain visible as gaps.
 
-`direct_url.json` can point to the directory used to build a non-editable wheel. That
-does not mean runtime imports use that directory or that the installed snapshot still
-matches it. An editable install can have metadata in site-packages and imports in the
-checkout, with no package tree next to its metadata. Verify that mapping explicitly.
-An absent `direct_url.json` or missing historical wheel filename is not itself a failure;
-installed paths and content evidence are more useful than reconstructing an archive name.
+A missing or failed supplemental collector does not block metadata/hardware/source
+inventory. Include the failure and remaining unknowns in the confirmation report.
+Mandatory user confirmation still applies before compatibility decisions, code changes
+or adaptation validation; approving known gaps does not establish the missing capability.
+Do not semantically import unfinished MetaX modules into the coordinator. Environment
+probes are the only runtime collection allowed before approval.
 
-## Confirm the environment with the user
+## Inspect correspondence
 
-After collecting and interpreting the report, proactively ask the user to confirm
-the environment, even when the detected paths appear consistent. Present a compact
-table with the five locations, package versions and checkout revisions, effective
-import origins, and any material source/wheel differences or unresolved fields.
-State which vLLM copy is the comparison target, which MetaX checkout will be edited,
-and which copies validation will import under the proposed interpreter and cwd.
-Label proposed import-path adjustments as planned, not already verified.
+Compare source trees with installed distributions, not just versions or `__init__.py`.
+Multiple versions, user site, `.pth` files, editable finders, symlinks, cwd shadowing and
+`PYTHONPATH` can make metadata describe a different package from actual imports.
+Local egg-info is not proof an installed wheel matches. `direct_url.json` can identify
+a build source without proving current runtime correspondence; its absence alone is
+not a failure. Separate generated version files from substantive source differences.
 
-Ask one bundled question in the user's language, for example:
-"Are these the intended environment and source versions for this upgrade?
-Confirm the proposed setup, or specify which paths or target revision to change."
-Use an available user-input tool that supports this clarification; otherwise ask
-in the final response. Make the question self-contained by including the detected
-paths and chosen target, rather than relying only on a collapsed progress message.
-Explain that this skill's environment-confirmation step prevents reviewing one copy
-while editing or testing another; link this skill's `SKILL.md` and quote its relevant
-confirmation instruction when requesting the confirmation.
+The probe models `python -c`/`python -m` from the runtime cwd; it cannot prove console
+script, pytest, Ray or engine-worker origins. Relative `PYTHONPATH` or cwd-dependent
+startup customization requires launching from the actual runtime cwd. Confirm effective
+origins inside real validation processes after the gate. Mixed Python and extension
+origins need explicit ABI evidence; Python tree equality does not establish binary match.
 
-Until the user responds, continue only independent read-only work such as listing
-requested files and reading repository requirements. Wait before compatibility decisions,
-adaptation edits, or runtime validation. Silence, elapsed time, a preselected option, and
-probe exit status 0 are not confirmation. This confirms the intended environment;
-it does not authorize package installation or other changes outside the task.
+Keep relevant path overrides only. Do not dump unrestricted environment variables,
+credentials or credential-bearing index/provenance URLs. Preserve sanitized raw logs
+and report any redaction; do not conceal mismatches through redaction.
 
-If the user corrects a path or target, re-run the relevant detection and present the
-updated plan for confirmation. Do not ask again when the user already explicitly
-confirmed the same mapping in this session. Recheck after environment changes and
-ask again only if the confirmed interpreter, source target, or runtime mapping changes
-or becomes uncertain; expected edits within the confirmed checkout do not invalidate
-confirmation. Follow an explicit user instruction to skip this question, while still
-performing the technical checks and reporting discrepancies.
+## Obtain and persist confirmation
 
-## Interpret mismatches before adapting code
+Present a compact self-contained table of SDK, GPU, interpreter/environment, private
+requirement comparison, both source revisions, both installed copies and effective import
+plan. Include snapshot artifact path, stable environment fingerprint, known issues and
+TODO path. Name the vLLM comparison target and MetaX checkout to edit explicitly.
 
-- **Upstream checkout versus installed vLLM differs:** identify whether the user wants
-  the installed revision or the checkout revision. Compare the exact affected modules,
-  helpers, and callers in that target. Do not silently read one and test the other.
-- **Local MetaX changes versus an older installed wheel:** this may be intentional.
-  Record that tests must import the edited checkout. If they load the wheel instead,
-  the test does not validate the changes. Use an explicit process-local source path
-  when appropriate and recheck origins; installing a wheel is not required just to
-  run source-level tests.
-- **Source import shadows installed metadata:** list both. Local `_version.py` and
-  installed distribution metadata may describe different builds. A matching package
-  `__init__.py` does not establish that all affected modules match.
-- **Missing source, distribution, or unresolved editable mapping:** report unknowns.
-  Continue independent inventory work, but do not assert compatibility against that
-  artifact. Include unresolved fields in the environment confirmation and ask for
-  missing inputs when available evidence cannot establish intent.
+Ask one bundled question in the user's language. State that the common skill requires
+explicit confirmation before compatibility work; link its `SKILL.md` and quote the
+relevant gate instruction. If pausing for the answer, keep compatibility work pending.
+Independent inventory and environment diagnostics may continue.
 
-The probe compares Python trees and separately lists installed extension libraries.
-It does not establish binary compatibility. When local Python uses extensions from
-another build, record the extension origin, Torch/MACA ABI evidence, and appropriate
-runtime checks. Do not label mixed source/binary execution as a fully matched build.
+Save the actual user reply to a durable text artifact. Confirm only the fingerprint
+that the user saw, for example:
 
-Keep the resulting table, the chosen comparison/runtime plan, and the user's
-confirmation or explicit instruction to skip confirmation in the task evidence (a separate audit file is not required).
-Re-run the preflight after path, interpreter, checkout, or installation changes.
+```bash
+/opt/venv/bin/python tools/metax_upgrade/upgrade.py confirm \
+  --run-dir .metax-upgrade/release-upgrade \
+  --fingerprint FINGERPRINT_FROM_REPORT \
+  --user-response-file .metax-upgrade/release-upgrade/user-confirmation.txt
+```
 
-## Component evidence boundary
+Add `--acknowledge-issues` only if the actual reply explicitly accepts the reported
+missing fields/mismatches. Never supply an invented reply, auto-generated "yes", or
+that flag just to get the command through. Acknowledged limitations remain unverified
+and can still block particular runtime obligations.
 
-The JSON `components` field collects distribution candidates and top-level module
-resolution without importing GPU packages. Follow aliases, wrappers and native
-extensions inside the actual test process. Inspect signatures, docstrings and source
-where available; an unavailable Python signature does not prove lack of support.
-Check joint input/output dtype, shape, strides, optional argument and layout contracts.
-The calling specialist skill decides which capabilities and numerical cases to test.
-Comments, matching API names and upstream support claims require revalidation against
-the installed MACA implementation. Rediscover moved upstream package paths instead of
-assuming either `vllm/model_executor/models/` or `vllm/models/` always exists.
+Run `assert-ready --run-dir ...` before compatibility decisions/edits and use the same
+gate for validation. Reuse approval across specialists only for the same freshly verified
+identity/mapping. If the user changes a selection, recollect and present a new snapshot.
+Do not treat silence, elapsed time, successful collection or a previous upgrade request
+as confirmation. Package installation remains separately authorized work.
+
+## Resume and stale evidence
+
+Environment identity includes SDK/GPU, selected interpreter/packages, requirements,
+released target and runtime mapping. The immutable full snapshot also binds collection
+artifacts. Expected MetaX adaptation edits update source fingerprints separately; they
+do not force environment reapproval after every edit. Environment/target changes require
+fresh confirmation and invalidate relevant evidence. Source/contract changes invalidate
+affected task and consumer evidence even if environment approval remains current.
+
+Resume first, inspect the current report and source diffs, then choose an unfinished
+obligation. Never use a historic passing log after its environment or source changed.

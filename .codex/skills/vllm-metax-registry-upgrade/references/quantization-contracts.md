@@ -85,6 +85,5 @@ and transform those dimensions directly. Derive INT8 packing separately if suppo
   Trace scale ownership and `None` semantics through quant-config creation and kernels.
 - For added INT8 bias arguments, inspect the local helper, stored quant config and
   selected experts implementation, then validate nonzero bias numerically.
-- DeepGEMM and other MetaX component APIs can differ from the upstream wrappers. Record
-  actual callable and extension origins and inspect argument semantics rather than
-  inferring support from a package name or availability check.
+- Compare DeepGEMM and other MetaX component argument semantics with their upstream
+  wrappers; package availability alone does not establish an equivalent quantization API.

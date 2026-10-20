@@ -5,32 +5,18 @@ description: Review and adapt vllm_metax/registry registrations, quantization co
 
 # vLLM-MetaX Registry Upgrade
 
-Maintain the full contract from plugin activation to the selected implementation.
-A registered class name, matching signature, or upstream support declaration does
-not establish that the installed MetaX implementation supports the same behavior.
+Read [vllm-metax-upgrade-common](../vllm-metax-upgrade-common/SKILL.md) in full and
+apply it before this specialist workflow.
 
-## Scope and environment
+## Scope
 
-- Apply to requested adaptations in `vllm_metax/registry/`, including quantization
-  configurations, CustomOps and linear kernels. Inspect directly related oracles,
-  experts, wrappers and callers outside that directory as necessary. Edit them only
-  when needed for the authorized adaptation; do not expand into unrelated changes.
+- Cover requested `vllm_metax/registry/` adaptations: quantization configurations,
+  CustomOps and linear kernels, plus directly required oracles, experts, wrappers
+  and callers. Keep unrelated components outside the task.
 - For sparse indexers registered here, cover registration, constructor compatibility,
-  dtype dispatch and wrapper contracts. Standalone attention algorithm, cache-index
-  or numerical kernel work belongs to the attention workflow. Monkey patches belong
-  to the patch workflow. Do not automatically invoke either skill, impose patch
-  headers, or write registry findings into `vllm_metax/patch/AUDIT.md`.
-- Keep review-only requests read-only. Identify the subject: staged snapshot, working
-  tree, installed package or specified revision. Preserve user changes and do not
-  stage, commit, reinstall packages or edit upstream/site-packages without authorization.
-  For staged validation, export the index and prove that imports use that snapshot;
-  unstaged files must not silently supply missing staged dependencies.
-- Read applicable repository instructions.
-- Read and apply [vllm-metax-upgrade-common](../vllm-metax-upgrade-common/SKILL.md)
-  before compatibility decisions. It owns environment/source discovery, the shared
-  read-only probe, one-time target confirmation and verification evidence rules.
-  Reuse the same established environment record across upgrade skills; do not ask
-  again for an unchanged mapping. Keep the domain-specific workflow below.
+  dtype dispatch and wrapper contracts. Standalone attention algorithms, cache indices
+  and kernel numerics belong to the attention workflow; monkey patches belong to the
+  patch workflow.
 
 ## Trace registration and dispatch
 
@@ -46,13 +32,13 @@ plugin entry point -> package imports -> decorator/table mutation
 -> backend oracle -> experts/prepare-finalize -> wrapper -> installed kernel
 ```
 
-- Exercise fresh-process plugin startup as well as direct module imports. One missing
-  symbol in an eagerly imported quantization module can break every registration.
-  A partially populated registry after an exception is not successful startup.
+- Verify normal plugin startup completes as well as each registration's activation.
+  One missing symbol in an eager quantization import can break all registrations;
+  a partially populated registry after an exception is not successful startup.
 - Resolve aliases, lazy exports, module redirects, duplicate keys and import ordering.
   Verify the effective lookup result and caller binding, not only decorator presence.
-- Check exact platform keys (including OOT), dtype/capability predicates and explicit
-  backend overrides. Preserve other platforms' entries and explicit user choices.
+- Check exact platform keys (including OOT), dtype/capability predicates and backend
+  overrides without disturbing other platforms' registry entries.
 - For overridden classes, inspect the current MRO and inherited methods. A copied
   constructor's `super()` may now call a parent with a different signature. Bypassing
   that parent requires initializing all state consumed by inherited allocation,
@@ -70,42 +56,20 @@ For quantization work, read [quantization-contracts.md](references/quantization-
 For CustomOps and linear registrations, apply the same chain checks to real/fake schemas,
 optional inputs, tensor/tuple outputs, layout requirements and capability predicates.
 
-Choose per entry: retain a needed difference, update the adapter, remove redundant code,
-migrate to a supported extension point, or reject an unsupported combination early.
-Do not copy upstream support claims into MetaX predicates without checking the installed
-implementation. Comments and earlier review conclusions are hypotheses to verify.
-
 - Validate joint configurations: quantization format, symmetry, group size, activation,
   bias, device, parallel mode and selected backend. Supporting one dimension does not
   establish support for every combination.
 - Keep allocation, checkpoint loading, post-load conversion, parameter replacement,
   quant-config construction and kernel consumption consistent. Returned converted
   tensors must actually reach the kernel through the layer/config used by execution.
-- Keep MetaX-specific behavior only where justified. Removing a redundant override is
-  valid when the inherited implementation and its dependencies provide the same behavior.
-- Preserve algorithm and layout explanations. State dimension meanings, packing axes,
-  stride requirements, conversion order and why the MetaX path differs. Do not impose
-  monkey-patch headers on registry files.
-- Attribute defects carefully: new adapter regression, existing adapter defect, target
-  upstream defect, installed component bug or environment mismatch. To claim an upstream
-  defect, inspect and reproduce the actual target path; limit the claim to that revision.
+- Before removing an overridden registration, confirm the inherited factory still
+  selects the intended implementation and initializes its consumed state.
+- Check dimension meanings, packing axes, strides and conversion order across registered
+  allocation, post-load conversion and kernel consumption.
 
-## Validate and report
+## Validate registration and state
 
-Read [validation.md](references/validation.md) and select checks that discriminate the
-changed behavior, using the common skill's isolated-validation and evidence rules.
-
-Start with startup/lookup and interface checks, then validate affected state/layout and
-real GPU behavior. An isolated constructor or scatter test may bypass an earlier failure
-inside that test process, but record the bypass and keep the real function under review.
-Such tests do not establish production reachability or kernel support.
-
-For a re-review, account for every prior finding as fixed, partially fixed, still present,
-or masked by an earlier failure/capability rejection. Do not stop after fixing the first
-exception. A rejected asymmetric configuration can hide a broken zero-point scatter.
-
-Report locations, trigger, consequence, evidence, verification level and untested scope.
-For fixes, include what changed, actual interpreter/import origins and reproducible test
-commands/results. Record runtime workarounds explicitly. Do not claim full-model,
-distributed, capture or performance validation from import and tensor-layout checks.
-Use a user-requested audit location if provided; no separate audit file is mandatory.
+Read [validation.md](references/validation.md) for registration, weight-layout and kernel
+cases. Check startup/lookup before state construction, post-load conversion and actual
+kernel selection. Recheck affected asymmetric branches after resolving capability
+rejection: that rejection can hide a broken zero-point scatter.

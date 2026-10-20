@@ -92,6 +92,4 @@ interface independently of FlashAttention. Do not conflate their FP8 support.
 Inspect MetaX custom ops/MCOPLIB, Triton, Torch/MACA, communication helpers and their
 extension paths when the affected path uses them. Verify argument semantics, ABI,
 return values and capture behavior instead of assuming the upstream `_C` operation
-has the same implementation. If an optional dependency fails before the attention
-path runs, report that separately; a process-local workaround must be disclosed and
-must not mock the component being validated.
+has the same implementation.
