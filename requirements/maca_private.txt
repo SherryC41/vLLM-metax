@@ -36,7 +36,7 @@ apache-tvm-ffi==0.1.11+maca
 tilelang==0.1.12+maca
 
 deep_gemm==0.2.0+maca0.4.11.1
-mcoplib==0.4.11+ga3b69de.maca3.8.0.25.torch2.10
+mcoplib==0.4.14
 
 lmcache==0.5.3+maca3.8.2.201
 nixl==1.0.0+maca3.8.2.208
