@@ -9,7 +9,6 @@ from vllm.model_executor.layers.quantization.compressed_tensors.compressed_tenso
 from compressed_tensors.quantization import (
     ActivationOrdering,
     QuantizationArgs,
-    QuantizationStrategy,
 )
 from vllm.model_executor.layers.fused_moe.config import (
     FusedMoEConfig,
@@ -51,6 +50,7 @@ class CompressedTensorsWNA16MoEMethod(vllm_ctm_wna16):
         moe: FusedMoEConfig,
         layer_name: str | None = None,
     ):
+        # NOTE(metax): Use the MACA oracle while inheriting target checkpoint allocation.
         super(vllm_ctm_wna16, self).__init__(moe)
         self.weight_quant = weight_quant
         self.input_quant = input_quant
@@ -59,8 +59,11 @@ class CompressedTensorsWNA16MoEMethod(vllm_ctm_wna16):
         self.num_bits = weight_quant.num_bits
         self.packed_factor = Fraction(32, weight_quant.num_bits)
         self.strategy = weight_quant.strategy
-        self.group_size = weight_quant.group_size
-        self.actorder = weight_quant.actorder
+        # Per-channel strategies leave group_size unset; -1 is the in-tree
+        # encoding for that, as in CompressedTensorsWNA16 and siblings.
+        self.group_size = (
+            -1 if weight_quant.group_size is None else weight_quant.group_size
+        )
 
         # Extract quant_type and create weight key for oracle selection
         self.quant_type = (
@@ -89,11 +92,6 @@ class CompressedTensorsWNA16MoEMethod(vllm_ctm_wna16):
 
         weight_key = QuantKey(self.quant_type, scale, symmetric=self.symmetric)
 
-        is_actorder = self.strategy == QuantizationStrategy.GROUP and self.actorder in (
-            ActivationOrdering.GROUP,
-            ActivationOrdering.DYNAMIC,
-        )
-
         # Select WNA16 MoE backend via oracle.
         self.wna16_backend, self.experts_cls = select_wna16_moe_backend(
             config=self.moe,
@@ -101,24 +99,23 @@ class CompressedTensorsWNA16MoEMethod(vllm_ctm_wna16):
             quant_config=self.weight_quant,
             may_have_zp=not self.symmetric,
             may_have_bias=False,
-            allow_tile_padding=not is_actorder,
+            allow_tile_padding=True,
         )
 
-        assert self.wna16_backend == WNA16MoEBackend.TRITON, (
-            "only support triton on wna16 moe"
-        )
-
-        # Inherited weight allocation/loading uses K-first checkpoint tensors.
-        # The Triton converter transposes them to N-first after loading; this
-        # checkpoint layout does not mean that the runtime uses Marlin.
-        self.is_transposed = True
+        # NOTE(metax): Only the local Triton WNA16 experts are available.
+        assert self.wna16_backend == WNA16MoEBackend.TRITON
         self.is_marlin = False
+        # CT checkpoints always load in N-first format [E, N, K_packed].
+        # Backend-specific transposition is handled in
+        # convert_to_wna16_moe_kernel_format.
+        self.is_transposed = False
 
-        # channelwise is not supported by this kernel
+        # NOTE(metax): Channelwise and activation-ordered CT are not supported.
         assert weight_quant.strategy == "group"
-        # grouped actorder isn't supported by this kernel
-        assert weight_quant.actorder != "group"
-
+        assert weight_quant.actorder not in (
+            ActivationOrdering.GROUP,
+            ActivationOrdering.DYNAMIC,
+        )
         # Non-Marlin WNA16 always uses bf16/fp16 inputs
         self.input_dtype = torch.bfloat16
 
@@ -135,6 +132,10 @@ class CompressedTensorsWNA16MoEMethod(vllm_ctm_wna16):
         )
 
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
+        # NOTE(metax): Only the Triton experts exist on MACA, so the CPU-only
+        # w13 pre-permutation and the Marlin input-global-scale registration
+        # have no counterpart here. CT weights arrive N-first, matching the
+        # target converter result.
         # Process weights using the shared oracle infrastructure
         converted = convert_to_wna16_moe_kernel_format(
             backend=self.wna16_backend,
@@ -145,10 +146,10 @@ class CompressedTensorsWNA16MoEMethod(vllm_ctm_wna16):
             w2=layer.w2_weight_packed,
             w13_scale=layer.w13_weight_scale,
             w2_scale=layer.w2_weight_scale,
-            w13_g_idx=layer.w13_weight_g_idx,
-            w2_g_idx=layer.w2_weight_g_idx,
             w13_qzeros=getattr(layer, "w13_weight_zero_point", None),
             w2_qzeros=getattr(layer, "w2_weight_zero_point", None),
+            w13_bias=getattr(layer, "w13_bias", None),
+            w2_bias=getattr(layer, "w2_bias", None),
         )
 
         if converted is None:
@@ -160,16 +161,12 @@ class CompressedTensorsWNA16MoEMethod(vllm_ctm_wna16):
             w2_qweight,
             w13_scales,
             w2_scales,
-            w13_g_idx_processed,
-            w2_g_idx_processed,
-            w13_g_idx_sort_indices,
-            w2_g_idx_sort_indices,
             w13_qzeros,
             w2_qzeros,
             w13_input_global_scale,
             w2_input_global_scale,
-            _,  # w13_bias
-            _,  # w2_bias
+            w13_bias,
+            w2_bias,
         ) = converted
 
         # Replace common parameters
@@ -178,8 +175,11 @@ class CompressedTensorsWNA16MoEMethod(vllm_ctm_wna16):
         replace_parameter(layer, "w13_weight_scale", w13_scales)
         replace_parameter(layer, "w2_weight_scale", w2_scales)
 
-        # The quant config reads zero points from the layer, so scatter the
-        # converted N-first uint8 tensors together with weights and scales.
+        if w13_bias is not None:
+            replace_parameter(layer, "w13_bias", w13_bias)
+        if w2_bias is not None:
+            replace_parameter(layer, "w2_bias", w2_bias)
+
         if not self.symmetric:
             assert w13_qzeros is not None and w2_qzeros is not None
             replace_parameter(layer, "w13_weight_zero_point", w13_qzeros)

@@ -16,12 +16,15 @@ from vllm.logger import init_logger
 import torch
 from vllm.model_executor.layers.fused_moe import modular_kernel as mk
 from vllm.model_executor.layers.fused_moe.oracle.mxfp4 import (
-    Mxfp4MoeBackend,
     TRITON_BACKENDS,
 )
 from vllm_metax.model_executor.layers.fused_moe.oracle.mxfp4 import (
-    backend_to_kernel_cls,
     convert_weight_to_mxfp4_moe_kernel_format,
+    select_deepseek_v4_mxfp4_moe_backend,
+    make_mxfp4_moe_kernel,
+)
+from vllm.model_executor.layers.quantization.utils.quant_utils import (
+    QuantKey,
 )
 from vllm.model_executor.utils import replace_parameter
 
@@ -37,12 +40,14 @@ class MacaMxfp4Config(Mxfp4Config):
 
 
 class Mxfp4MoEMethod(_vllm_Mxfp4MoEMethod):
-    def __init__(self, moe: FusedMoEConfig):
+    def __init__(self, moe: FusedMoEConfig, activation_key: QuantKey | None = None):
         super(_vllm_Mxfp4MoEMethod, self).__init__(moe)
         self.weight_dtype = "mxfp4"
-        self.mxfp4_backend = Mxfp4MoeBackend.TRITON
-        self.experts_cls = backend_to_kernel_cls(self.mxfp4_backend)[0]
-        logger.info_once("Using TRITON backend for MXFP4 MoE.")
+        # Checkpoint-declared activation quantization. Only backends that pick
+        # their activation format from the layer (Humming) consume it.
+        self.activation_key = activation_key
+
+        self.mxfp4_backend, self.experts_cls = select_deepseek_v4_mxfp4_moe_backend(moe)
 
         self.max_capture_size = moe.max_capture_size
 
@@ -142,3 +147,16 @@ class Mxfp4MoEMethod(_vllm_Mxfp4MoEMethod):
 
         # Build quant config
         self._build_moe_kernel(layer)
+
+    def _build_moe_kernel(self, layer: RoutedExperts) -> None:
+        """Build the modular MoE kernel from the (already in-format) weights."""
+        self.moe_quant_config = self.get_fused_moe_quant_config(layer)
+        if self.moe_quant_config is not None and self.experts_cls is not None:
+            self.moe_kernel = make_mxfp4_moe_kernel(
+                moe_quant_config=self.moe_quant_config,
+                moe_config=self.moe,
+                mxfp4_backend=self.mxfp4_backend,
+                experts_cls=self.experts_cls,
+                routing_tables=layer._expert_routing_tables(),
+            )
+            self.moe_kernel.fused_experts.process_weights_after_loading(layer)

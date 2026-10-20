@@ -12,6 +12,7 @@ from vllm.model_executor.layers.fused_moe.config import (
 )
 
 from vllm.model_executor.layers.fused_moe.oracle.unquantized import (
+    UnquantizedMoeBackend,
     convert_to_unquantized_kernel_format,
 )
 
@@ -35,11 +36,16 @@ if TYPE_CHECKING:
 @vllm_UnquantizedFusedMoEMethod.register_oot
 class UnquantizedFusedMoEMethod(vllm_UnquantizedFusedMoEMethod):
     def __init__(self, moe: FusedMoEConfig):
+        # NOTE(metax): Select the MACA oracle instead of upstream CUDA backends.
         super(vllm_UnquantizedFusedMoEMethod, self).__init__(moe)
-        # -------------------------------------------------
-        # Here in maca we use Triton for Modular MoE kernel
         self.unquantized_backend, self.experts_cls = select_unquantized_moe_backend(
             moe_config=self.moe,
+        )
+        # MoonEP replaces the named parameters with its [E+B] gate/down
+        # split and keeps the up projection outside the parameter registry,
+        # so a pre-processed (e.g. ipc_cache) load cannot reconstruct it.
+        self.supports_pre_processed_weights = (
+            self.unquantized_backend != UnquantizedMoeBackend.MOONEP
         )
 
     def _setup_kernel(
@@ -54,6 +60,7 @@ class UnquantizedFusedMoEMethod(vllm_UnquantizedFusedMoEMethod):
             moe_config=layer.moe_config,
             w13_weight=w13,
             w2_weight=w2,
+            layer=layer,
         )
         # `moe_kernel` is initialized to None in FusedMoEMethodBase.__init__;
         # On the first call we replace the parameter normally. On subsequent
@@ -73,6 +80,14 @@ class UnquantizedFusedMoEMethod(vllm_UnquantizedFusedMoEMethod):
             # weight updates mutate those bias tensors in place, the kernel
             # does not need to be re-built.
             self._init_moe_kernel(layer)
+
+            # No-op by default. Experts that need the layer itself for setup
+            # convert_to_unquantized_kernel_format cannot express override
+            # it: CPU prepacks into its grouped-gemm layout and captures the
+            # router config; MoonEP picks up the [E+B] weight layout for
+            # prefetch and the up projection.
+            assert self.moe_kernel is not None
+            self.moe_kernel.fused_experts.process_weights_after_loading(layer)
 
     def _init_moe_kernel(self, layer: "RoutedExperts") -> None:
         """Build the MoE kernel from the layer's current (shuffled) weights."""

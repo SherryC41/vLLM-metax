@@ -18,6 +18,7 @@ from vllm.model_executor.layers.fused_moe.unquantized_fused_moe_method import (
 )
 
 from vllm.model_executor.layers.quantization import register_quantization_config
+from vllm.model_executor.layers.quantization.base_config import QuantizationConfig
 
 
 # Remove configs of marlin
@@ -41,16 +42,21 @@ class MacaMoeWNA16Config(MoeWNA16Config):
             from vllm_metax.registry.quant_config.auto_awq import MacaAutoAWQConfig
             from vllm_metax.registry.quant_config.auto_gptq import MacaAutoGPTQConfig
 
+            linear_config: QuantizationConfig
             if self.linear_quant_method == "gptq":
-                return MacaAutoGPTQConfig.from_config(
-                    self.full_config
-                ).get_quant_method(layer, prefix)
+                linear_config = MacaAutoGPTQConfig.from_config(self.full_config)
             elif self.linear_quant_method in ("awq", "awq_marlin"):
-                return MacaAutoAWQConfig.from_config(self.full_config).get_quant_method(
-                    layer, prefix
-                )
+                linear_config = MacaAutoAWQConfig.from_config(self.full_config)
             else:
                 raise ValueError("moe_wna16 only support gptq and awq.")
+
+            # The delegate is rebuilt from the raw HF quantization dict, which
+            # lists shard names and never fused ones. Without the mapping it
+            # resolves fused layers (qkv_proj, gate_up_proj) to
+            # UnquantizedLinearMethod and the checkpoint's qweight has nowhere
+            # to load.
+            linear_config.packed_modules_mapping = self.packed_modules_mapping
+            return linear_config.get_quant_method(layer, prefix)
         elif isinstance(layer, RoutedExperts):
             return MoeWNA16Method(self, layer.moe_config)
         return None

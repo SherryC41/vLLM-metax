@@ -66,9 +66,9 @@ def _backend_incompatibility_reason(
             return "the AutoAWQ weight layout is not supported"
         if isinstance(quant_config, AutoGPTQConfig) and quant_config.desc_act:
             return "GPTQ activation ordering is not supported"
-        if (
-            isinstance(quant_config, QuantizationArgs)
-            and quant_config.actorder == "group"
+        if isinstance(quant_config, QuantizationArgs) and quant_config.actorder in (
+            "group",
+            "dynamic",
         ):
             return "group activation ordering is not supported"
 
@@ -225,7 +225,6 @@ def make_wna16_moe_kernel(
     logger.info_once("Using %s", experts_cls.__name__, scope="local")
 
     extra_args: dict[str, Any] = {}
-
     if prepare_finalize.activation_format == mk.FusedMoEActivationFormat.BatchedExperts:
         max_num_tokens = prepare_finalize.max_num_tokens_per_rank()
         assert max_num_tokens is not None
@@ -253,8 +252,6 @@ def convert_to_wna16_moe_kernel_format(
     w2: torch.Tensor,
     w13_scale: torch.Tensor,
     w2_scale: torch.Tensor,
-    w13_g_idx: torch.Tensor | None = None,
-    w2_g_idx: torch.Tensor | None = None,
     w13_qzeros: torch.Tensor | None = None,
     w2_qzeros: torch.Tensor | None = None,
     w13_bias: torch.Tensor | None = None,
@@ -265,10 +262,6 @@ def convert_to_wna16_moe_kernel_format(
         torch.Tensor,  # w2_qweight
         torch.Tensor,  # w13_scales
         torch.Tensor,  # w2_scales
-        torch.Tensor | None,  # w13_g_idx
-        torch.Tensor | None,  # w2_g_idx
-        torch.Tensor | None,  # w13_g_idx_sort_indices
-        torch.Tensor | None,  # w2_g_idx_sort_indices
         torch.Tensor | None,  # w13_qzeros
         torch.Tensor | None,  # w2_qzeros
         torch.Tensor | None,  # w13_input_global_scale
@@ -279,6 +272,10 @@ def convert_to_wna16_moe_kernel_format(
     | None
 ):
     """Dispatch weight post-processing to the appropriate per-backend handler.
+
+    All non-AWQ frontends must supply weights and scales in N-first
+    canonical layout ``[E, N_out, K_packed]``.  AWQ uses a different
+    packing axis and is handled by dedicated per-backend helpers.
 
     To add a new backend, implement a ``_process_weights_<name>`` helper and
     add a branch here. Backends that rewrite the layer's parameters in place
@@ -291,66 +288,38 @@ def convert_to_wna16_moe_kernel_format(
         input_dtype: optional activation dtype, usually should be 16 bit.
     """
     if backend == WNA16MoEBackend.TRITON:
-        # Two possible input layouts depending on the quantization source:
-        #
-        # MoeWNA16 (uint8):              (E, N_out, K // bit8_pack)  — N-first
-        #   → just view as uint8 (no-op)
-        #
-        # AutoGPTQ/compressed-tensors (int32, K-first):
-        #   (E, K // pack32, N_out)
-        #   → transpose to N-first, then view as uint8 to get
-        #     (E, N_out, K // bit8_pack)  [int32 = 4 bytes → 4 uint8s]
-        #   Scales: (E, K // gs, N_out) → transpose → (E, N_out, K // gs)
-        from vllm_metax.registry.quant_config.auto_gptq import (
-            MacaAutoGPTQConfig,
-        )
+        # All inputs arrive in canonical N-first format; view as uint8.
+        w13_uint8 = w13.contiguous().view(torch.uint8)
+        w2_uint8 = w2.contiguous().view(torch.uint8)
 
-        if isinstance(quant_config, (MacaAutoGPTQConfig, QuantizationArgs)):
-            # These integrations build in K-first format even when the Triton
-            # backend is selected. Transpose to N-first first.
-            w13_uint8 = w13.transpose(1, 2).contiguous().view(torch.uint8)
-            w2_uint8 = w2.transpose(1, 2).contiguous().view(torch.uint8)
-            w13_scale = w13_scale.transpose(1, 2).contiguous()
-            w2_scale = w2_scale.transpose(1, 2).contiguous()
-            # Zero points from compressed-tensors checkpoints are K-first int32
-            # with 8 int4 ZPs packed per element: shape (E, K//gs, N//8).
-            # fused_moe_kernel_gptq_awq expects N-first uint8 with 2 int4 ZPs
-            # per byte: shape (E, N//2, K//gs), indexed as
-            # (offs_bn // 2) * stride_bzn + offs_k_group * stride_bzk.
-            # Expand the packed output-channel dimension into bytes BEFORE
-            # transposing: (E, K//gs, N//8) int32 -> (E, K//gs, N//2)
-            # uint8 -> (E, N//2, K//gs). With a single K group, transposing
-            # first leaves a singleton last dimension whose stride can be
-            # greater than 1 even after contiguous(); view(uint8) rejects it.
-            # After this, element [e, offs_bn//2, k_group] is the uint8 byte
-            # holding the two int4 ZPs for output channels offs_bn and offs_bn+1.
-            if w13_qzeros is not None:
-                w13_qzeros = (
-                    w13_qzeros.contiguous()
-                    .view(torch.uint8)
-                    .transpose(1, 2)
-                    .contiguous()
-                )
-            if w2_qzeros is not None:
-                w2_qzeros = (
-                    w2_qzeros.contiguous()
-                    .view(torch.uint8)
-                    .transpose(1, 2)
-                    .contiguous()
-                )
-        else:
-            # MoeWNA16 uses N-first uint8 weights and scales.
-            w13_uint8 = w13.view(torch.uint8)
-            w2_uint8 = w2.view(torch.uint8)
+        # Repack N-first int32 zero-points to uint8:
+        # [E, N//pf, K//gs] int32 → [E, N*4//pf, K//gs] uint8
+        if w13_qzeros is not None and w13_qzeros.dtype == torch.int32:
+            E13, Np13, Kg13 = w13_qzeros.shape
+            w13_qzeros = (
+                w13_qzeros.contiguous()
+                .view(torch.uint8)
+                .reshape(E13, Np13, Kg13, 4)
+                .permute(0, 1, 3, 2)
+                .reshape(E13, Np13 * 4, Kg13)
+                .contiguous()
+            )
+        if w2_qzeros is not None and w2_qzeros.dtype == torch.int32:
+            E2, Np2, Kg2 = w2_qzeros.shape
+            w2_qzeros = (
+                w2_qzeros.contiguous()
+                .view(torch.uint8)
+                .reshape(E2, Np2, Kg2, 4)
+                .permute(0, 1, 3, 2)
+                .reshape(E2, Np2 * 4, Kg2)
+                .contiguous()
+            )
+
         return (
             w13_uint8,
             w2_uint8,
             w13_scale,
             w2_scale,
-            None,
-            None,
-            None,
-            None,
             w13_qzeros,
             w2_qzeros,
             None,

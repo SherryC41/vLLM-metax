@@ -13,7 +13,6 @@ from compressed_tensors.quantization import (
 
 from vllm.model_executor.layers.fused_moe import (
     RoutedExperts,
-    SharedExperts,
 )
 from vllm.model_executor.layers.quantization.compressed_tensors.compressed_tensors_moe.compressed_tensors_moe_w8a8_int8 import (
     CompressedTensorsW8A8Int8MoEMethod as vllm_ctm_w8a8_int8,
@@ -74,20 +73,6 @@ class CompressedTensorsW8A8Int8MoEMethod(vllm_ctm_w8a8_int8):
             activation_key=kInt8DynamicTokenSym,
         )
 
-    def get_fused_moe_quant_config(self, layer: torch.nn.Module) -> FusedMoEQuantConfig:
-        return make_int8_moe_quant_config(
-            w1_scale=layer.w13_weight_scale,
-            w2_scale=layer.w2_weight_scale,
-            a1_scale=layer.w13_input_scale,
-            a2_scale=layer.w2_input_scale,
-            w1_bias=getattr(layer, "w13_bias", None),
-            w2_bias=getattr(layer, "w2_bias", None),
-            per_act_token_quant=True,
-            gemm1_alpha=getattr(layer, "swiglu_alpha", None),
-            gemm1_beta=getattr(layer, "swiglu_beta", None),
-            gemm1_clamp_limit=getattr(layer, "swiglu_limit", None),
-        )
-
     def process_weights_after_loading(self, layer: RoutedExperts) -> None:
         w13, w2 = convert_to_int8_moe_kernel_format(
             int8_backend=self.int8_backend,
@@ -109,27 +94,14 @@ class CompressedTensorsW8A8Int8MoEMethod(vllm_ctm_w8a8_int8):
         )
         self.moe_kernel.fused_experts.process_weights_after_loading(layer)
 
-    def apply(
-        self,
-        layer: RoutedExperts,
-        x: torch.Tensor,
-        topk_weights: torch.Tensor,
-        topk_ids: torch.Tensor,
-        shared_experts: SharedExperts | None,
-        shared_experts_input: torch.Tensor | None,
-    ) -> torch.Tensor:
-        assert not self.is_monolithic
-        assert self.moe_kernel is not None
-        return self.moe_kernel.apply(
-            x,
-            layer.w13_weight,
-            layer.w2_weight,
-            topk_weights=topk_weights,
-            topk_ids=topk_ids,
-            activation=layer.activation,
-            global_num_experts=layer.global_num_experts,
-            expert_map=layer.expert_map,
-            apply_router_weight_on_input=layer.apply_router_weight_on_input,
-            shared_experts=shared_experts,
-            shared_experts_input=shared_experts_input,
+    def get_fused_moe_quant_config(self, layer: torch.nn.Module) -> FusedMoEQuantConfig:
+        return make_int8_moe_quant_config(
+            w1_scale=layer.w13_weight_scale,
+            w2_scale=layer.w2_weight_scale,
+            a1_scale=layer.w13_input_scale,
+            a2_scale=layer.w2_input_scale,
+            w1_bias=getattr(layer, "w13_bias", None),
+            w2_bias=getattr(layer, "w2_bias", None),
+            per_act_token_quant=True,
+            layer=layer,
         )

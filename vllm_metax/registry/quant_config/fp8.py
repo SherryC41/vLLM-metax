@@ -8,11 +8,11 @@ from vllm.model_executor.layers.fused_moe import (
     UnquantizedFusedMoEMethod,
 )
 from vllm.model_executor.layers.fused_moe.oracle.fp8 import (
-    refine_fp8_moe_block_shape,
     convert_to_fp8_moe_kernel_format,
 )
 from vllm_metax.model_executor.layers.fused_moe.oracle.fp8 import (
     make_fp8_moe_kernel,
+    resolve_fp8_moe_weight_block_shape,
     select_fp8_moe_backend,
 )
 from vllm.model_executor.layers.linear import (
@@ -60,18 +60,9 @@ class MacaFp8Config(Fp8Config):
                 match_mode=self.ignored_layers_match_mode,
             ):
                 return UnquantizedLinearMethod()
-            if not self.is_checkpoint_fp8_serialized:
-                from vllm.model_executor.layers.quantization.online.fp8 import (
-                    Fp8PerTensorOnlineLinearMethod,
-                )
-
-                online_method = Fp8PerTensorOnlineLinearMethod()
-                online_method.marlin_input_dtype = get_marlin_input_dtype(prefix)
-                return online_method
-            else:
-                offline_method = vllm_Fp8LinearMethod(self)
-                offline_method.marlin_input_dtype = get_marlin_input_dtype(prefix)
-                return offline_method
+            offline_method = vllm_Fp8LinearMethod(self)
+            offline_method.marlin_input_dtype = get_marlin_input_dtype(prefix)
+            return offline_method
         elif isinstance(layer, RoutedExperts):
             if is_layer_skipped(
                 prefix=prefix,
@@ -86,14 +77,7 @@ class MacaFp8Config(Fp8Config):
                 )
 
                 return Mxfp4MoEMethod(layer.moe_config)
-            if self.is_checkpoint_fp8_serialized:
-                return Fp8MoEMethod(self, layer)
-            else:
-                from vllm.model_executor.layers.quantization.online.fp8 import (
-                    Fp8PerTensorOnlineMoEMethod,
-                )
-
-                return Fp8PerTensorOnlineMoEMethod(layer=layer)
+            return Fp8MoEMethod(self, layer)
         elif isinstance(layer, Attention):
             return Fp8KVCacheMethod(self)
         return None
@@ -115,32 +99,16 @@ class Fp8MoEMethod(vllm_Fp8MoEMethod):
         # Set weight key and activation key for kernel compatibility
         if self.block_quant:
             assert self.weight_block_size is not None
-            # TP shards the intermediate dim of the expert weights, so a
-            # per-shard size that is not a multiple of the checkpoint's block
-            # size makes the checkpoint's block scales impossible to shard
-            # exactly. When a finer block size (>= 32) divides both the
-            # checkpoint blocks and all involved dims, the weight scales are
-            # refined to that granularity at load time (a lossless upsampling,
-            # since the refined block divides the checkpoint block). The
-            # refined block shape is encoded in the weight key, so the oracle
-            # only selects kernels that support it (e.g. Triton, which takes
-            # the block shape as a runtime argument).
-            refined_shape = refine_fp8_moe_block_shape(self.moe, self.weight_block_size)
-            if refined_shape is not None:
-                block_n, block_k = self.weight_block_size
-                self.weight_scale_refine = (
-                    block_n // refined_shape[0],
-                    block_k // refined_shape[1],
+            # Adapt the checkpoint block shape to TP sharding before
+            # building the weight key.
+            self.moe_block_shape, self.weight_scale_refine = (
+                resolve_fp8_moe_weight_block_shape(
+                    self.moe,
+                    self.weight_block_size,
+                    kFp8Dynamic128Sym,
+                    self.quant_config.is_checkpoint_fp8_serialized,
                 )
-                self.moe_block_shape = refined_shape
-                logger.info_once(
-                    "FP8 MoE block scales refined from %s to %s to fit "
-                    "the TP-sharded intermediate size %d.",
-                    str(self.weight_block_size),
-                    str(refined_shape),
-                    self.moe.intermediate_size_per_partition,
-                )
-            assert self.moe_block_shape is not None
+            )
             weight_key = create_fp8_quant_key(
                 static=True, group_shape=GroupShape(*self.moe_block_shape)
             )
@@ -153,7 +121,7 @@ class Fp8MoEMethod(vllm_Fp8MoEMethod):
                 else kFp8DynamicTensorSym
             )
 
-        # Select Fp8 MoE backend
+        # NOTE(metax): Select MACA FP8 MoE experts and kernel dispatch.
         self.fp8_backend, self.experts_cls = select_fp8_moe_backend(
             config=self.moe,
             weight_key=weight_key,
@@ -190,6 +158,10 @@ class Fp8MoEMethod(vllm_Fp8MoEMethod):
         replace_parameter(layer, f"w13_{self.weight_scale_name}", w13_scale)
         replace_parameter(layer, f"w2_{self.weight_scale_name}", w2_scale)
 
+        self._init_moe_kernel(layer)
+
+    def _init_moe_kernel(self, layer: RoutedExperts) -> None:
+        """Build the MoE kernel from the layer's current (converted) weights."""
         self.moe_quant_config = self.get_fused_moe_quant_config(layer)
         assert self.moe_quant_config is not None
         assert self.experts_cls is not None

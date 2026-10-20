@@ -58,8 +58,12 @@ class CompressedTensorsMoEMethod(vllm_ct_moe_method):
         # quant_config._add_fused_moe_to_target_scheme_map()
         _add_fused_moe_to_target_scheme_map(quant_config)
         unfused_names = [
-            layer_name + proj_name
-            for proj_name in [".0.gate_proj", ".0.up_proj", ".0.down_proj"]
+            f"{layer_name}.0.{proj_name}"
+            for proj_name in (
+                layer.ckpt_gate_proj_name,
+                layer.ckpt_up_proj_name,
+                layer.ckpt_down_proj_name,
+            )
         ]
         # TODO: refactor this to use expert_mapping and check all layer numbers
         all_scheme_dicts = [
