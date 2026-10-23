@@ -92,6 +92,16 @@ class CudaRTLibrary:
             cudaError_t,
             [ctypes.c_void_p],
         ),
+        # cudaError_t cudaHostRegister ( void* ptr, size_t size, unsigned int flags )
+        Function(
+            "cudaHostRegister",
+            cudaError_t,
+            [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint],
+        ),
+        # cudaError_t cudaHostUnregister ( void* ptr )
+        Function("cudaHostUnregister", cudaError_t, [ctypes.c_void_p]),
+        # cudaError_t cudaGetLastError ( void )
+        Function("cudaGetLastError", cudaError_t, []),
     ]
 
     # https://rocm.docs.amd.com/projects/HIPIFY/en/latest/tables/CUDA_Runtime_API_functions_supported_by_HIP.html # noqa
@@ -107,6 +117,10 @@ class CudaRTLibrary:
         "cudaIpcGetMemHandle": "mcIpcGetMemHandle",
         "cudaIpcOpenMemHandle": "mcIpcOpenMemHandle",
         "cudaIpcCloseMemHandle": "mcIpcCloseMemHandle",
+        # NOTE(metax): MACA exposes the target raw-status host-memory APIs.
+        "cudaHostRegister": "mcHostRegister",
+        "cudaHostUnregister": "mcHostUnregister",
+        "cudaGetLastError": "mcGetLastError",
         "mcExtMallocWithFlags": "mcExtMallocWithFlags",
     }
 
@@ -220,3 +234,16 @@ class CudaRTLibrary:
 
     def cudaIpcCloseMemHandle(self, devPtr: ctypes.c_void_p):
         self.CUDART_CHECK(self.funcs["cudaIpcCloseMemHandle"](devPtr))
+
+    def cudaHostRegister(self, ptr: int, size: int, flags: int = 0) -> int:
+        """Return the raw error code instead of raising, since callers can
+        fall back to pageable memory. Drain a failure with cudaGetLastError."""
+        return self.funcs["cudaHostRegister"](ctypes.c_void_p(ptr), size, flags)
+
+    def cudaHostUnregister(self, ptr: int) -> int:
+        """Return the raw error code instead of raising."""
+        return self.funcs["cudaHostUnregister"](ctypes.c_void_p(ptr))
+
+    def cudaGetLastError(self) -> int:
+        """Return and clear the error pending on this thread."""
+        return self.funcs["cudaGetLastError"]()
