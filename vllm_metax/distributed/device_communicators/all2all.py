@@ -6,8 +6,6 @@ from typing import Any
 import torch
 
 import vllm.envs as envs
-from vllm.distributed import get_dp_group, get_ep_group, get_pcp_group
-from vllm.forward_context import get_forward_context
 
 from vllm.platforms import current_platform
 
@@ -24,26 +22,6 @@ class MacaAgRsAll2AllManager(AgRsAll2AllManager):
     all-gather (dispatch) and reduce-scatter (combine).
     """
 
-    def __init__(self, cpu_group, tcp_store_group=None):
-        super().__init__(cpu_group, tcp_store_group)
-
-    def _get_comm_group(self, is_sequence_parallel: bool) -> Any:
-        if is_sequence_parallel:
-            return get_ep_group()
-        if self.dp_world_size > 1:
-            return get_dp_group()
-        return get_pcp_group()
-
-    def _get_sizes(self, num_local_tokens: int, comm_group: Any) -> list[int]:
-        if self.dp_world_size == 1:
-            return [num_local_tokens] * comm_group.world_size
-
-        dp_metadata = get_forward_context().dp_metadata
-        assert dp_metadata is not None
-        sizes = dp_metadata.get_chunk_sizes_across_dp_rank()
-        assert sizes is not None
-        return sizes
-
     def dispatch_router_logits(
         self,
         hidden_states: torch.Tensor,
@@ -54,9 +32,7 @@ class MacaAgRsAll2AllManager(AgRsAll2AllManager):
         tuple[torch.Tensor, torch.Tensor]
         | tuple[torch.Tensor, torch.Tensor, list[torch.Tensor]]
     ):
-        """
-        Gather hidden_states and router_logits from all dp ranks.
-        """
+        """Gather hidden_states and router_logits from all dp ranks."""
         dist_group = self._get_comm_group(is_sequence_parallel)
         sizes = self._get_sizes(hidden_states.shape[0], dist_group)
         assert sizes[dist_group.rank_in_group] == hidden_states.shape[0]
@@ -168,9 +144,7 @@ class MacaAgRsAll2AllManager(AgRsAll2AllManager):
         assert sizes[dist_group.rank_in_group] == hidden_states.shape[0]
 
         topk = topk_weights.shape[1]
-
         combined = self._pack(topk_weights, topk_ids, extra_tensors)
-
         tensors_to_gather = [hidden_states, combined]
 
         if extra_tensors is not None and len(extra_tensors) != 1:
@@ -183,20 +157,6 @@ class MacaAgRsAll2AllManager(AgRsAll2AllManager):
         )
 
         return self._unpack(topk, gathered_tensors, extra_tensors)
-
-    def combine(
-        self, hidden_states: torch.Tensor, is_sequence_parallel: bool = False
-    ) -> torch.Tensor:
-        """
-        Reduce-scatter hidden_states across all dp ranks.
-        """
-        dist_group = self._get_comm_group(is_sequence_parallel)
-        sizes = self._get_sizes(
-            hidden_states.shape[0] // dist_group.world_size,
-            dist_group,
-        )
-        hidden_states = dist_group.reduce_scatterv(hidden_states, dim=0, sizes=sizes)
-        return hidden_states
 
     def destroy(self):
         pass
@@ -258,8 +218,7 @@ class MacaDeepEPLLAll2AllManager(DeepEPLLAll2AllManager):
         num_global_experts: int,
         num_local_experts: int,
     ) -> dict[Any, Any]:
-        """
-        max_num_tokens_per_dp_rank : the maximum number of tokens a DP rank
+        """max_num_tokens_per_dp_rank : the maximum number of tokens a DP rank
           can dispatch all the ranks must hold the same value.
         token_hidden_size: the hidden dimension of each token.
         num_ep_ranks: the number of EP group ranks.
