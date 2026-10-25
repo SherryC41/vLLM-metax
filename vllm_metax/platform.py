@@ -388,19 +388,11 @@ class MacaPlatformBase(Platform):
                 "VLLM_TUNED_CONFIG_FOLDER",
                 tuned_dir_with_h,
                 f"set FusedMoE tuned config dir by hidden_size={hidden_size}",
-                forced=True,
             )
 
         # -------------------------------------------------------
-        # Note: Hotfix for Gemma 4 flash attention issue (addressed in upstream)
-        if model_config is not None and model_config.hf_config.model_type in (
-            "gemma4_text",
-            "gemma4",
-        ):
-            model_config.model_arch_config.is_mm_prefix_lm = False
-
-        # -------------------------------------------------------
-        # NOTE(metax): Disable JIT warmup for Maca platform, as it may cause issues with some models
+        # NOTE(metax): CUDA vendor warmups are unavailable on MACA. Preserve the
+        # target/user JIT warmup setting, including enforce_eager normalization.
         if kernel_config := vllm_config.kernel_config:
             kernel_config.enable_jit_warmup = True
             kernel_config.enable_cutedsl_warmup = False
@@ -445,26 +437,6 @@ class MacaPlatformBase(Platform):
                 valid_backends_priorities.append((backend, priority))
 
         return valid_backends_priorities, invalid_reasons
-
-    @classmethod
-    def _get_indexer_block_alignment(cls, vllm_config: VllmConfig) -> int | None:
-        index_kpool = getattr(
-            vllm_config.model_config.hf_text_config, "index_kpool", None
-        )
-        if not index_kpool or index_kpool <= 1:
-            return None
-        from vllm.utils.deep_gemm import PAGED_MQA_PAGE_SIZES
-
-        # kpool paged-MQA indexer: the storage block (block_size /
-        # index_kpool) is virtually split into pool pages, so block_size
-        # must be a multiple of index_kpool times a legal pool page.
-        page = min(PAGED_MQA_PAGE_SIZES)
-        if cls.is_device_capability_family(120):
-            # On sm120 the DeepGEMM paged-MQA kernel only accepts block_kv
-            # 64 for the fp8 indexer cache, so align to the largest pool
-            # page here to make the page split land on 64 not the min 32.
-            page = max(PAGED_MQA_PAGE_SIZES)
-        return index_kpool * page
 
     @classmethod
     def get_attn_backend_cls(
@@ -752,6 +724,20 @@ class MacaPlatformBase(Platform):
         if parser is not None:
             parser.set_defaults(async_scheduling=False)
         register_attention_backends()
+
+    @classmethod
+    def validate_environ(cls, hard_fail: bool) -> None:
+        """Validate upstream and MetaX environment variables."""
+        known_variables = envs.environment_variables.keys() | set(
+            mx_envs.environment_variables
+        )
+        for name in os.environ:
+            if name.startswith("VLLM_") and name not in known_variables:
+                if hard_fail:
+                    raise ValueError(
+                        f"Unknown vLLM environment variable detected: {name}"
+                    )
+                logger.warning("Unknown vLLM environment variable detected: %s", name)
 
 
 # NVML utils
