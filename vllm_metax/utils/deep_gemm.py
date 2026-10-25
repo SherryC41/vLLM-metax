@@ -10,13 +10,20 @@ import os
 import functools
 
 from enum import Enum
-from typing import Any, Callable, NoReturn
+from typing import Any, NoReturn
+from collections.abc import Callable
 
 import torch
 
 import vllm.envs as envs
 from vllm.utils.import_utils import has_deep_gemm
-from vllm.utils.deep_gemm import _import_deep_gemm, is_deep_gemm_supported, logger
+from vllm.utils.deep_gemm import (
+    _import_deep_gemm,
+    is_deep_gemm_supported,
+    logger,
+    get_paged_mqa_logits_metadata,  # noqa: F401
+    get_paged_mqa_page_sizes,  # noqa: F401
+)
 
 
 class DeepGemmQuantScaleFMT(Enum):
@@ -731,6 +738,11 @@ def int8_m_grouped_gemm_nt_masked(*args, **kwargs):
     if _int8_grouped_masked_impl is None:
         return _missing(*args, **kwargs)
     return _int8_grouped_masked_impl(*args, **kwargs)
+
+
+# NOTE(metax): Keep the local native-row policy separate from CUDA capability checks.
+def native_next_n_supported(next_n: int) -> bool:
+    return next_n in (1, 2, 4)
 
 
 def dummy():
