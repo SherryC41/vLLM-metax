@@ -14,6 +14,8 @@ from vllm.model_executor.layers.mhc import (
     HCHeadOp as _vllm_HCHeadOp,
 )
 
+HAS_TILELANG_MHC = True
+
 
 # --8<-- [start:mhc_pre]
 @_vllm_MHCPreOp.register_oot
