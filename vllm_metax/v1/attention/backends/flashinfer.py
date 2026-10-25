@@ -336,7 +336,8 @@ class MacaFlashInferBackend(AttentionBackend):
     ]
 
     @staticmethod
-    def get_supported_kernel_block_sizes() -> list[int | MultipleOf]:
+    def get_supported_kernel_block_sizes(kv_cache_spec=None) -> list[int | MultipleOf]:
+        # NOTE(metax): The installed MACA FlashInfer wrappers do not implement TRTLLM large pages.
         # MetaX FlashInfer 0.2.6 ships the native wrappers, not TRTLLM.
         return [16, 32, 64]
 

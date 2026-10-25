@@ -35,7 +35,6 @@ from .flash_attn import (
     MacaFlashAttentionBackend as FlashAttentionBackend,
     FlashAttentionImpl,
     FlashAttentionMetadata,
-    cascade_attention,
 )
 
 import vllm_metax.envs as mx_envs
@@ -139,17 +138,25 @@ class FlashAttentionDiffKVImpl(FlashAttentionImpl):
         """Forward pass with FlashAttention.
 
         Args:
+            layer: The attention layer, providing the q/k/v quantization scales.
             query: shape = [num_tokens, num_heads, head_size]
             key: shape = [num_tokens, num_kv_heads, head_size]
             value: shape = [num_tokens, num_kv_heads, head_size_v]
             kv_cache: shape =
                 [num_blocks, block_size, num_kv_heads, head_size + head_size_v]
             attn_metadata: Metadata for attention.
+            output: Tensor that the attention result is written into.
+            output_scale: Scale for fused output quantization; not supported
+                by this backend.
+            output_block_scale: Block scale for fused output quantization;
+                not supported by this backend.
+
         Returns:
             shape = [num_tokens, num_heads * head_size_v]
         NOTE: FP8 quantization, flash-attn expect the size of
               {q,k,v}_descale to be (num_sequences, num_kv_heads).
               We use torch's .expand() to avoid duplicating values
+
         """
         assert self.vllm_flash_attn_version is not None, (
             "FlashAttention version not detected."
@@ -215,148 +222,114 @@ class FlashAttentionDiffKVImpl(FlashAttentionImpl):
             key_cache = key_cache.view(current_platform.fp8_dtype())
             value_cache = value_cache.view(current_platform.fp8_dtype())
 
-        if not attn_metadata.use_cascade:
-            cu_seqlens_q = attn_metadata.query_start_loc
-            seqused_k = attn_metadata.seq_lens  # noqa: F841
-            max_seqlen_q = attn_metadata.max_query_len
-            max_seqlen_k = attn_metadata.max_seq_len
-            block_table = attn_metadata.block_table
-            scheduler_metadata = attn_metadata.scheduler_metadata  # noqa: F841
+        cu_seqlens_q = attn_metadata.query_start_loc
+        seqused_k = attn_metadata.seq_lens  # noqa: F841
+        max_seqlen_q = attn_metadata.max_query_len
+        max_seqlen_k = attn_metadata.max_seq_len
+        block_table = attn_metadata.block_table
+        scheduler_metadata = attn_metadata.scheduler_metadata  # noqa: F841
 
-            descale_shape = (cu_seqlens_q.shape[0] - 1, self.num_kv_heads)
+        descale_shape = (cu_seqlens_q.shape[0] - 1, self.num_kv_heads)
 
-            if self.dcp_world_size > 1:
-                self._forward_with_dcp(
-                    query[:num_actual_tokens],
-                    key[:num_actual_tokens],
-                    value[:num_actual_tokens],
-                    key_cache,
-                    value_cache,
-                    output[:num_actual_tokens],
-                    attn_metadata,
-                    q_descale=layer._q_scale.expand(descale_shape),
-                    k_descale=layer._k_scale.expand(descale_shape),
-                    v_descale=layer._v_scale.expand(descale_shape),
+        if self.dcp_world_size > 1:
+            self._forward_with_dcp(
+                query[:num_actual_tokens],
+                key[:num_actual_tokens],
+                value[:num_actual_tokens],
+                key_cache,
+                value_cache,
+                output[:num_actual_tokens],
+                attn_metadata,
+                q_descale=layer._q_scale.expand(descale_shape),
+                k_descale=layer._k_scale.expand(descale_shape),
+                v_descale=layer._v_scale.expand(descale_shape),
+            )
+            return output
+        else:
+            sliding_window_size = (
+                list(self.sliding_window) if self.sliding_window is not None else None
+            )
+            if mx_envs.VLLM_METAX_ENABLE_FA_SPLIT_FORWARD:
+                # ┌------------------------  Metax Modification -------------------------┐
+                # For handling prefill decode split
+                split_decode_num_tokens = attn_metadata.split_decode_num_tokens
+                if attn_metadata.split_prefill_num_reqs > 0:
+                    output[split_decode_num_tokens:num_actual_tokens] = (
+                        flash_attn_varlen_func(
+                            q=query[split_decode_num_tokens:num_actual_tokens],
+                            k=key_cache,
+                            v=value_cache,
+                            cu_seqlens_q=(attn_metadata.split_prefill_query_start_loc),
+                            cu_seqlens_k=attn_metadata.split_prefill_cu_seqlens_k,
+                            max_seqlen_q=attn_metadata.max_query_len,
+                            max_seqlen_k=attn_metadata.split_prefill_max_seq_len,
+                            softmax_scale=self.scale,
+                            causal=attn_metadata.causal,
+                            alibi_slopes=self.alibi_slopes,
+                            window_size=sliding_window_size,
+                            block_table=attn_metadata.split_prefill_block_table,
+                            softcap=self.logits_soft_cap,
+                            s_aux=self.sinks,
+                        )
+                    )
+                if attn_metadata.split_decode_num_reqs > 0:
+                    decode_query = query[:split_decode_num_tokens]
+                    # Use flash_attn_with_kvcache for normal decoding.
+                    if attn_metadata.split_decode_bucket_req_bounds is not None:
+                        self._forward_decode_with_query_len_bucketing(
+                            decode_query,
+                            key_cache,
+                            value_cache,
+                            output,
+                            attn_metadata,
+                        )
+                    else:
+                        decode_query = reshape_query_for_spec_decode(
+                            decode_query,
+                            attn_metadata.split_decode_num_reqs,
+                        )
+                        output_unreshape = flash_attn_with_kvcache(
+                            q=decode_query,
+                            k_cache=key_cache,
+                            v_cache=value_cache,
+                            block_table=attn_metadata.split_decode_block_table,
+                            cache_seqlens=attn_metadata.split_decode_seq_lens,
+                            softmax_scale=self.scale,
+                            causal=attn_metadata.causal,
+                            window_size=sliding_window_size,
+                            alibi_slopes=self.alibi_slopes,
+                            softcap=self.logits_soft_cap,
+                            s_aux=self.sinks,
+                            num_splits=1 if self.batch_invariant_enabled else 0,
+                        )
+                        output[:split_decode_num_tokens] = (
+                            reshape_attn_output_for_spec_decode(output_unreshape)
+                        )
+                return output
+            # └------------------------- Metax Modification -------------------------┘
+            else:
+                # Fallback for legacy metadata paths: keep it GPU-only.
+                # TODO(hank): Currently we manually process it on forward. Move it to attention_metadata
+                cu_seqlens_k = F.pad(
+                    attn_metadata.seq_lens,
+                    (1, 0),
+                    value=0,
+                ).cumsum(dim=0, dtype=torch.int32)
+
+                output[:num_actual_tokens] = flash_attn_varlen_func(
+                    q=query[:num_actual_tokens],
+                    k=key_cache,
+                    v=value_cache,
+                    cu_seqlens_q=cu_seqlens_q,
+                    max_seqlen_q=max_seqlen_q,
+                    cu_seqlens_k=cu_seqlens_k,
+                    max_seqlen_k=max_seqlen_k,
+                    softmax_scale=self.scale,
+                    causal=attn_metadata.causal,
+                    alibi_slopes=self.alibi_slopes,
+                    window_size=sliding_window_size,
+                    block_table=block_table,
+                    softcap=self.logits_soft_cap,
+                    s_aux=self.sinks,
                 )
                 return output
-            else:
-                sliding_window_size = (
-                    list(self.sliding_window)
-                    if self.sliding_window is not None
-                    else None
-                )
-                if mx_envs.VLLM_METAX_ENABLE_FA_SPLIT_FORWARD:
-                    # ┌------------------------  Metax Modification -------------------------┐
-                    # For handling prefill decode split
-                    split_decode_num_tokens = attn_metadata.split_decode_num_tokens
-                    if attn_metadata.split_prefill_num_reqs > 0:
-                        output[split_decode_num_tokens:num_actual_tokens] = (
-                            flash_attn_varlen_func(
-                                q=query[split_decode_num_tokens:num_actual_tokens],
-                                k=key_cache,
-                                v=value_cache,
-                                cu_seqlens_q=(
-                                    attn_metadata.split_prefill_query_start_loc
-                                ),
-                                cu_seqlens_k=attn_metadata.split_prefill_cu_seqlens_k,
-                                max_seqlen_q=attn_metadata.max_query_len,
-                                max_seqlen_k=attn_metadata.split_prefill_max_seq_len,
-                                softmax_scale=self.scale,
-                                causal=attn_metadata.causal,
-                                alibi_slopes=self.alibi_slopes,
-                                window_size=sliding_window_size,
-                                block_table=attn_metadata.split_prefill_block_table,
-                                softcap=self.logits_soft_cap,
-                                s_aux=self.sinks,
-                            )
-                        )
-                    if attn_metadata.split_decode_num_reqs > 0:
-                        decode_query = query[:split_decode_num_tokens]
-                        # Use flash_attn_with_kvcache for normal decoding.
-                        if attn_metadata.split_decode_bucket_req_bounds is not None:
-                            self._forward_decode_with_query_len_bucketing(
-                                decode_query,
-                                key_cache,
-                                value_cache,
-                                output,
-                                attn_metadata,
-                            )
-                        else:
-                            decode_query = reshape_query_for_spec_decode(
-                                decode_query,
-                                attn_metadata.split_decode_num_reqs,
-                            )
-                            output_unreshape = flash_attn_with_kvcache(
-                                q=decode_query,
-                                k_cache=key_cache,
-                                v_cache=value_cache,
-                                block_table=attn_metadata.split_decode_block_table,
-                                cache_seqlens=attn_metadata.split_decode_seq_lens,
-                                softmax_scale=self.scale,
-                                causal=attn_metadata.causal,
-                                window_size=sliding_window_size,
-                                alibi_slopes=self.alibi_slopes,
-                                softcap=self.logits_soft_cap,
-                                s_aux=self.sinks,
-                                num_splits=1 if self.batch_invariant_enabled else 0,
-                            )
-                            output[:split_decode_num_tokens] = (
-                                reshape_attn_output_for_spec_decode(output_unreshape)
-                            )
-                    return output
-                # └------------------------- Metax Modification -------------------------┘
-                else:
-                    # Fallback for legacy metadata paths: keep it GPU-only.
-                    # TODO(hank): Currently we manually process it on forward. Move it to attention_metadata
-                    cu_seqlens_k = F.pad(
-                        attn_metadata.seq_lens,
-                        (1, 0),
-                        value=0,
-                    ).cumsum(dim=0, dtype=torch.int32)
-
-                    output[:num_actual_tokens] = flash_attn_varlen_func(
-                        q=query[:num_actual_tokens],
-                        k=key_cache,
-                        v=value_cache,
-                        cu_seqlens_q=cu_seqlens_q,
-                        max_seqlen_q=max_seqlen_q,
-                        cu_seqlens_k=cu_seqlens_k,
-                        max_seqlen_k=max_seqlen_k,
-                        softmax_scale=self.scale,
-                        causal=attn_metadata.causal,
-                        alibi_slopes=self.alibi_slopes,
-                        window_size=sliding_window_size,
-                        block_table=block_table,
-                        softcap=self.logits_soft_cap,
-                        s_aux=self.sinks,
-                    )
-                    return output
-
-        # Cascade attention (rare case).
-        cascade_attention(
-            output[:num_actual_tokens],
-            query[:num_actual_tokens],
-            key_cache,
-            value_cache,
-            cu_query_lens=attn_metadata.query_start_loc,
-            max_query_len=attn_metadata.max_query_len,
-            cu_prefix_query_lens=attn_metadata.cu_prefix_query_lens,
-            prefix_kv_lens=attn_metadata.prefix_kv_lens,
-            suffix_kv_lens=attn_metadata.suffix_kv_lens,
-            max_kv_len=attn_metadata.max_seq_len,
-            softmax_scale=self.scale,
-            alibi_slopes=self.alibi_slopes,
-            sliding_window=self.sliding_window,
-            logits_soft_cap=self.logits_soft_cap,
-            block_table=attn_metadata.block_table,
-            common_prefix_len=attn_metadata.common_prefix_len,
-            max_num_splits=attn_metadata.max_num_splits,
-            fa_version=self.vllm_flash_attn_version,
-            prefix_scheduler_metadata=attn_metadata.prefix_scheduler_metadata,
-            suffix_scheduler_metadata=attn_metadata.scheduler_metadata,
-            q_descale=layer._q_scale,
-            k_descale=layer._k_scale,
-            v_descale=layer._v_scale,
-            s_aux=self.sinks,
-        )
-        return output

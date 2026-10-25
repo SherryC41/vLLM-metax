@@ -18,7 +18,7 @@ from vllm.model_executor.layers.quantization.utils.quant_utils import (
 )
 from vllm.platforms import current_platform
 from vllm.platforms.interface import DeviceCapability
-from vllm.utils.math_utils import next_power_of_2
+from vllm.utils.math_utils import cdiv, next_power_of_2
 from vllm.utils.torch_utils import get_dtype_size, is_quantized_kv_cache
 from vllm.v1.attention.backend import (
     AttentionBackend,
@@ -45,6 +45,7 @@ from vllm.v1.kv_cache_interface import (
     KVQuantMode,
     get_kv_quant_mode,
 )
+
 from vllm.v1.attention.backends.registry import AttentionBackendEnum, register_backend
 
 logger = init_logger(__name__)
@@ -81,16 +82,8 @@ class TritonAttentionMetadata:
 
     causal: bool | torch.Tensor
 
-    # For cascade attention.
-    use_cascade: bool
-    common_prefix_len: int
-    cu_prefix_query_lens: torch.Tensor | None
-    prefix_kv_lens: torch.Tensor | None
-    suffix_kv_lens: torch.Tensor | None
-
     # Optional aot scheduling
     scheduler_metadata: torch.Tensor | None = None
-    prefix_scheduler_metadata: torch.Tensor | None = None
     mm_prefix_range: dict[int, list[tuple[int, int]]] | None = None
     mm_prefix_range_tensor: torch.Tensor | None = None
     rswa_prefix_lens: torch.Tensor | None = None
@@ -153,10 +146,29 @@ class TritonAttentionMetadataBuilder(AttentionMetadataBuilder[TritonAttentionMet
             )
 
         self.num_par_softmax_segments = NUM_PAR_SOFTMAX_SEGMENTS
+        # On SM120, batches whose 16-segment grid under-fills the SMs use 64.
+        self.max_seqs_64_segments = 0
+        if current_platform.is_cuda() and current_platform.is_device_capability(
+            (12, 0)
+        ):
+            self.max_seqs_64_segments = (current_platform.num_compute_units() - 1) // (
+                NUM_PAR_SOFTMAX_SEGMENTS * self.num_heads_kv
+            )
+        max_num_tokens_3d = self.seq_threshold_3D
+        if self.max_seqs_64_segments > 0:
+            self.num_par_softmax_segments = 64
+            # build() reuses this scratch at 16 segments with proportionally more rows.
+            max_num_tokens_3d = max(
+                min(self.max_seqs_64_segments, max_num_tokens_3d),
+                cdiv(
+                    max_num_tokens_3d,
+                    self.num_par_softmax_segments // NUM_PAR_SOFTMAX_SEGMENTS,
+                ),
+            )
         headdim_padded = next_power_of_2(self.headdim)
         self.softmax_segm_output = torch.empty(
             (
-                self.seq_threshold_3D,
+                max_num_tokens_3d,
                 self.num_heads_q,
                 self.num_par_softmax_segments,
                 headdim_padded,
@@ -165,16 +177,19 @@ class TritonAttentionMetadataBuilder(AttentionMetadataBuilder[TritonAttentionMet
             device=device,
         )
         self.softmax_segm_max = torch.empty(
-            (self.seq_threshold_3D, self.num_heads_q, self.num_par_softmax_segments),
+            (max_num_tokens_3d, self.num_heads_q, self.num_par_softmax_segments),
             dtype=torch.float32,
             device=device,
         )
         self.softmax_segm_expsum = torch.empty(
-            (self.seq_threshold_3D, self.num_heads_q, self.num_par_softmax_segments),
+            (max_num_tokens_3d, self.num_heads_q, self.num_par_softmax_segments),
             dtype=torch.float32,
             device=device,
         )
         self.rswa_window = model_config.rswa_window
+        # R-SWA restages prefix lengths in build(), which the no-op
+        # update_draft_decode_metadata() does not refresh.
+        self.supports_draft_decode_metadata_update = self.rswa_window is None
         self.persistent_rswa_prefix_lens: torch.Tensor | None = None
         if self.rswa_window is not None:
             self.persistent_rswa_prefix_lens = torch.empty(
@@ -209,23 +224,6 @@ class TritonAttentionMetadataBuilder(AttentionMetadataBuilder[TritonAttentionMet
         block_table_tensor = common_attn_metadata.block_table_tensor
         slot_mapping = common_attn_metadata.slot_mapping
 
-        use_cascade = common_prefix_len > 0
-
-        if use_cascade:
-            cu_prefix_query_lens = torch.tensor(
-                [0, num_actual_tokens], dtype=torch.int32, device=self.device
-            )
-            prefix_kv_lens = torch.tensor(
-                [common_prefix_len], dtype=torch.int32, device=self.device
-            )
-            suffix_kv_lens = common_attn_metadata.seq_lens.cpu() - common_prefix_len
-            suffix_kv_lens = suffix_kv_lens.to(self.device)
-        else:
-            cu_prefix_query_lens = None
-            prefix_kv_lens = None
-            suffix_kv_lens = None
-            prefix_scheduler_metadata = None
-
         attn_metadata = TritonAttentionMetadata(
             num_actual_tokens=num_actual_tokens,
             max_query_len=max_query_len,
@@ -235,18 +233,29 @@ class TritonAttentionMetadataBuilder(AttentionMetadataBuilder[TritonAttentionMet
             block_table=block_table_tensor,
             slot_mapping=slot_mapping,
             causal=common_attn_metadata.causal,
-            use_cascade=use_cascade,
-            common_prefix_len=common_prefix_len,
-            cu_prefix_query_lens=cu_prefix_query_lens,
-            prefix_kv_lens=prefix_kv_lens,
-            suffix_kv_lens=suffix_kv_lens,
-            prefix_scheduler_metadata=prefix_scheduler_metadata,
             seq_threshold_3D=self.seq_threshold_3D,
             num_par_softmax_segments=self.num_par_softmax_segments,
             softmax_segm_output=self.softmax_segm_output,
             softmax_segm_max=self.softmax_segm_max,
             softmax_segm_expsum=self.softmax_segm_expsum,
         )
+        if self.max_seqs_64_segments > 0 and (
+            self.max_seqs_64_segments < seq_lens.shape[0]
+            or self.softmax_segm_max.shape[0] < num_actual_tokens
+        ):
+            # The 16-segment grid fills the SMs, or the 64-segment rows cannot
+            # hold every query token: same scratch, 16-segment layout.
+            segments = NUM_PAR_SOFTMAX_SEGMENTS
+            attn_metadata.num_par_softmax_segments = segments
+            attn_metadata.softmax_segm_output = self.softmax_segm_output.view(
+                -1, self.num_heads_q, segments, self.softmax_segm_output.shape[-1]
+            )
+            attn_metadata.softmax_segm_max = self.softmax_segm_max.view(
+                -1, self.num_heads_q, segments
+            )
+            attn_metadata.softmax_segm_expsum = self.softmax_segm_expsum.view(
+                -1, self.num_heads_q, segments
+            )
 
         mm_ranges = common_attn_metadata.mm_req_doc_ranges
         if mm_ranges is not None:
@@ -272,6 +281,7 @@ class TritonAttentionMetadataBuilder(AttentionMetadataBuilder[TritonAttentionMet
         pass
 
 
+# NOTE(metax): Select this backend through the out-of-tree MACA registry.
 @register_backend(AttentionBackendEnum.TRITON_ATTN)
 class MacaTritonAttentionBackend(AttentionBackend):
     @classmethod
@@ -306,7 +316,7 @@ class MacaTritonAttentionBackend(AttentionBackend):
     ]
 
     @staticmethod
-    def get_supported_kernel_block_sizes() -> list[int | MultipleOf]:
+    def get_supported_kernel_block_sizes(kv_cache_spec=None) -> list[int | MultipleOf]:
         return [MultipleOf(16)]
 
     @classmethod
@@ -340,10 +350,6 @@ class MacaTritonAttentionBackend(AttentionBackend):
     @staticmethod
     def get_impl_cls() -> type["TritonAttentionImpl"]:
         return TritonAttentionImpl
-
-    @staticmethod
-    def use_cascade_attention(*args, **kwargs) -> bool:
-        return False
 
     @staticmethod
     def get_builder_cls() -> type["TritonAttentionMetadataBuilder"]:
@@ -559,14 +565,21 @@ class TritonAttentionImpl(AttentionImpl):
         """Forward pass with Paged Attention impl. in Triton.
 
         Args:
+            layer: The attention layer, providing the q/k/v quantization scales.
             query: shape = [num_tokens, num_heads, head_size]
             key: shape = [num_tokens, num_kv_heads, head_size]
             value: shape = [num_tokens, num_kv_heads, head_size]
             kv_cache: shape =
                 [num_blocks, num_kv_heads, block_size, 2 * head_size]
             attn_metadata: Metadata for attention.
+            output: Tensor that the attention result is written into.
+            output_scale: Scale for fused output quantization.
+            output_block_scale: Block scale for fused output quantization;
+                not supported by this backend.
+
         Returns:
             shape = [num_tokens, num_heads * head_size]
+
         """
         if output_block_scale is not None:
             raise NotImplementedError(
@@ -577,8 +590,6 @@ class TritonAttentionImpl(AttentionImpl):
         if attn_metadata is None:
             # Profiling run.
             return output.fill_(0)
-
-        assert attn_metadata.use_cascade is False
 
         # IMPORTANT!
         # NOTE(woosuk): With piece-wise CUDA graphs, this method is executed in
@@ -726,6 +737,7 @@ class TritonAttentionImpl(AttentionImpl):
             output: shape = [num_encoder_tokens, num_heads, head_size]
             attn_metadata: Encoder attention metadata
             layer: The attention layer
+
         """
         # Quantized KV cache is not supported for encoder attention.
         if is_quantized_kv_cache(self.kv_cache_dtype):
@@ -801,8 +813,8 @@ class TritonAttentionImpl(AttentionImpl):
         )
 
     def fused_rope_kvcache_supported(self):
-        if self._is_per_token_head_quant:
-            return False
+        # NOTE(metax): AITER fused RoPE/cache insertion is unavailable on MACA.
+        return False
 
     def do_rope_and_kv_cache_update(
         self,
@@ -816,4 +828,5 @@ class TritonAttentionImpl(AttentionImpl):
         kv_cache: torch.Tensor,
         layer_slot_mapping: torch.Tensor,
     ):
+        # NOTE(metax): Preserve the explicit rejection of the AITER-only path.
         raise NotImplementedError("Not supported on Maca.")
