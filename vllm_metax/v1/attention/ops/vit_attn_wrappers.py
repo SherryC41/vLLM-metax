@@ -18,6 +18,7 @@ To use these ops, you must have a recent version of PyTorch installed (>= 2.4.0)
 
 import einops
 import torch
+
 from vllm.utils.gpu_sync_debug import gpu_sync_allowed
 from vllm.utils.torch_utils import direct_register_custom_op
 
@@ -35,7 +36,8 @@ def flash_attn_maxseqlen_wrapper(
 ) -> torch.Tensor:
     # -----------------------------------
     # Meca version of flash attention
-    kwargs: dict[str, object] = {}
+    # NOTE(metax): fa_utils selects MACA FA2; its API has no out or
+    # fa_version keyword, including when the caller supplies a version selector.
     from vllm_metax.v1.attention.backends.fa_utils import flash_attn_varlen_func
 
     q_len = q.size(1)
@@ -62,7 +64,15 @@ def flash_attn_maxseqlen_wrapper(
         dropout_p=0.0,
         causal=False,
         softmax_scale=scale,
-        **kwargs,
+    )
+    # NOTE(metax): FA2 allocates its own output. Clear unmapped graph-padding
+    # rows using the runtime device boundary; they may otherwise contain NaNs.
+    output = output.contiguous()
+    output.masked_fill_(
+        (torch.arange(output.shape[0], device=output.device) >= cu_seqlens[-1])[
+            :, None, None
+        ],
+        0,
     )
     context_layer = einops.rearrange(output, "(b s) h d -> b s h d", b=batch_size)
     return context_layer
@@ -79,7 +89,7 @@ def flash_attn_maxseqlen_wrapper_fake(
     cu_seqlens: torch.Tensor | None = None,
     max_seqlen: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    return torch.empty_like(q)
+    return torch.empty_like(q, memory_format=torch.contiguous_format)
 
 
 direct_register_custom_op(
