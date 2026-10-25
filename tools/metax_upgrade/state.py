@@ -90,12 +90,13 @@ def load(run_dir):
     return state
 
 
-def save(run_dir, state):
+def save(run_dir, state, *, render_todo=True):
     state["revision"] += 1
     state["updated_at"] = now()
     # State is authoritative. A crash before TODO replacement is repaired on status/resume.
     write_json(Path(run_dir) / "state.json", state)
-    atomic_write(Path(run_dir) / "TODO.md", render(state))
+    if render_todo:
+        atomic_write(Path(run_dir) / "TODO.md", render(state))
 
 
 def relative_file(state, path):
@@ -239,7 +240,21 @@ def add_task(
     state["completed_at"] = None
 
 
-def missing_evidence(state, task_id):
+def set_scope(state, scope):
+    scope = scope.strip()
+    if not scope:
+        raise ValueError("Scope must be nonempty")
+    previous = state["inputs"].get("scope", "")
+    if scope == previous:
+        return
+    state.setdefault("scope_history", []).append(
+        {"at": now(), "previous": previous, "current": scope}
+    )
+    state["inputs"]["scope"] = scope
+    invalidate(state, set(state["tasks"]), "Upgrade scope changed")
+
+
+def missing_evidence(state, task_id, *, check_inputs=True):
     task = state["tasks"][task_id]
     # The latest observation for each kind wins; an earlier pass cannot hide a failure.
     latest = {}
@@ -253,7 +268,7 @@ def missing_evidence(state, task_id):
         or latest[kind]["result"] != "passed"
         or latest[kind]["signature"] != task_signature(state, task_id)
         or latest[kind]["environment"] != state["environment"]["fingerprint"]
-        or not evidence_inputs_current(latest[kind])
+        or (check_inputs and not evidence_inputs_current(latest[kind]))
     ]
 
 
@@ -316,6 +331,8 @@ def put_contract(state, contract):
 
 
 def render(state):
+    # CLI synchronization validates inputs. Rendering the derived view must not
+    # repeatedly hash checkpoint shards; acceptance still checks inputs directly.
     env = state["environment"]
     approval = env.get("confirmation")
     counts = {
@@ -363,7 +380,7 @@ def render(state):
         lines.append(f"  - Configuration: {task['configuration']}")
         lines.append(f"  - Depends on: {', '.join(task['depends_on']) or 'none'}")
         lines.append(
-            f"  - Pending evidence: {', '.join(missing_evidence(state, key)) or 'none'}"
+            f"  - Pending evidence: {', '.join(missing_evidence(state, key, check_inputs=False)) or 'none'}"
         )
         lines.append(f"  - Next: {task['next_action']}")
         if task["notes"]:

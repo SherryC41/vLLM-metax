@@ -186,6 +186,7 @@ Useful commands, all taking `--run-dir`:
 
 | Command | Purpose |
 | --- | --- |
+| `scope-set --scope TEXT` | Update the confirmed run scope without reinitializing; records history and invalidates task evidence. |
 | `task-set --id ID --status STATUS --note TEXT --next-action TEXT` | Save progress/blockers; done requires current evidence and done dependencies. |
 | `run-check --id ID --kind KIND --configuration CONFIG --input-file PATH --timeout SECONDS -- COMMAND ARGS` | Run a fresh bounded subprocess and retain input hashes, output, provenance and case results; repeat `--input-file` for indirect inputs. |
 | `checkpoint --note TEXT --next-action TEXT` | Save a handoff and invalidate evidence affected by source changes. |

@@ -311,7 +311,9 @@ def run_check(run_dir, state, args):
                 start_new_session=True,
             )
             evidence["process"] = processes.identity(process.pid)
-            store.save(run_dir, state)
+            # Persist identity before release; derived TODO work must not consume
+            # the supervisor's bounded startup handshake window.
+            store.save(run_dir, state, render_todo=False)
             # A killed coordinator cannot launch an unrecorded GPU workload.
             (folder / "release").touch()
             try:
@@ -378,6 +380,7 @@ def parser():
         "assert-ready",
         "task-add",
         "task-set",
+        "scope-set",
         "contract-put",
         "run-check",
         "checkpoint",
@@ -423,6 +426,8 @@ def parser():
             )
             command.add_argument("--note", default="")
             command.add_argument("--next-action", default="")
+        elif name == "scope-set":
+            command.add_argument("--scope", required=True)
         elif name in {"contract-put", "matrix-put", "mapping-put", "numeric-put"}:
             command.add_argument("--file", type=Path, required=True)
             if name in {"mapping-put", "numeric-put"}:
@@ -618,6 +623,9 @@ def main(argv=None):
                 if args.status in {"in_progress", "implemented", "done"}:
                     assert_ready(args.run_dir, state)
                 store.set_task(state, args.id, args.status, args.note, args.next_action)
+            elif args.action == "scope-set":
+                assert_ready(args.run_dir, state)
+                store.set_scope(state, args.scope)
             elif args.action == "contract-put":
                 assert_ready(args.run_dir, state)
                 store.put_contract(state, json.loads(args.file.read_text()))

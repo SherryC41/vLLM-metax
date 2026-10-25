@@ -165,6 +165,47 @@ class UpgradeTests(unittest.TestCase):
             code,
         )
 
+    def test_state_only_save_persists_without_rendering(self):
+        state = store.load(self.run)
+        revision = state["revision"]
+        todo = (self.run / "TODO.md").read_bytes()
+        with patch.object(store, "render", side_effect=AssertionError("rendered")):
+            store.save(self.run, state, render_todo=False)
+        self.assertEqual(store.load(self.run)["revision"], revision + 1)
+        self.assertEqual((self.run / "TODO.md").read_bytes(), todo)
+
+    def test_check_registers_identity_before_release_without_rendering(self):
+        self.approve()
+        self.task()
+        original_render = store.render
+
+        def guarded_render(state):
+            for task in state["tasks"].values():
+                for evidence in task["evidence"]:
+                    if evidence.get("process") and evidence["result"] == "interrupted":
+                        self.assertTrue((self.run / evidence["artifact"] / "release").is_file())
+            return original_render(state)
+
+        code = (
+            "import json; from pathlib import Path; "
+            f"state=json.loads(Path({str(self.run / 'state.json')!r}).read_text()); "
+            "assert state['tasks']['op']['evidence'][-1]['process']['pid'] > 0"
+        )
+        with patch.object(store, "render", side_effect=guarded_render):
+            self.check(code)
+        self.assertEqual(store.load(self.run)["tasks"]["op"]["evidence"][-1]["result"], "passed")
+
+    def test_todo_skips_input_rehash_but_acceptance_checks_it(self):
+        self.approve()
+        self.task()
+        self.check()
+        state = store.load(self.run)
+        with patch.object(store, "evidence_inputs_current", return_value=False) as current:
+            store.render(state)
+            current.assert_not_called()
+            self.assertEqual(store.missing_evidence(state, "op"), ["static"])
+            current.assert_called_once()
+
     def test_gate_prevents_work_and_validation_without_confirmation(self):
         self.task()
         for action, args in (
@@ -275,6 +316,21 @@ class UpgradeTests(unittest.TestCase):
         self.cli("finish")
         self.assertIsNotNone(store.load(self.run)["completed_at"])
         self.assertIn("Mode: component", (self.run / "TODO.md").read_text())
+
+    def test_scope_set_records_change_and_invalidates_evidence(self):
+        self.approve()
+        self.task()
+        self.assertEqual(self.check(), 0)
+        self.cli("task-set", "--id", "op", "--status", "done")
+
+        self.cli("scope-set", "--scope", "expanded model matrix")
+
+        state = store.load(self.run)
+        self.assertEqual(state["inputs"]["scope"], "expanded model matrix")
+        self.assertEqual(state["scope_history"][-1]["previous"], "offline test")
+        self.assertEqual(state["tasks"]["op"]["status"], "implemented")
+        self.assertTrue(state["tasks"]["op"]["evidence"][-1]["stale"])
+        self.assertIn("Scope: expanded model matrix", (self.run / "TODO.md").read_text())
 
     def test_check_that_changes_subject_cannot_pass(self):
         self.approve()
