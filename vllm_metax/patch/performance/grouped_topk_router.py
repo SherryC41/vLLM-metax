@@ -5,7 +5,7 @@
 # -----------------------------------------------------------------------------
 # Note: Add MetaX-specific grouped-topk routing fast paths and backend dispatch.
 #
-# Affected versions: vLLM 0.30.0 (ced6857afa0e), reviewed 2026-10-12.
+# Affected versions: vLLM 0.32.0 (5df63a7203cd), reviewed 2026-10-21.
 #
 # Remove at: Upstream routing dispatch supports the MetaX fused grouped-topk kernels
 #     through a native extension point.
@@ -17,6 +17,7 @@ import torch
 
 from vllm import envs as envs
 from vllm._aiter_ops import rocm_aiter_ops
+from vllm.forward_context import get_forward_context, is_forward_context_available
 from vllm.model_executor.layers.fused_moe.experts.rocm_aiter_moe import (
     rocm_aiter_grouped_topk,
 )
@@ -271,6 +272,7 @@ def _compute_routing(
         )
     else:
         # ┌------------------------  Metax Modification -------------------------┐
+        # NOTE(metax): Keep installed MACA fused routing dispatch.
         grouped_topk_impl = maca_grouped_topk
     # └------------------------- Metax Modification -------------------------┘
 
@@ -285,5 +287,16 @@ def _compute_routing(
         routed_scaling_factor=self.routed_scaling_factor,
         e_score_correction_bias=self.e_score_correction_bias,
     )
+
+    if (
+        self.skip_padding
+        and envs.VLLM_MOE_SKIP_PADDING
+        and is_forward_context_available()
+    ):
+        is_padding = get_forward_context().is_padding
+        if is_padding is not None:
+            is_padding = is_padding[: topk_ids.shape[0]].unsqueeze(1)
+            topk_weights = topk_weights.masked_fill(is_padding, 0)
+            topk_ids = topk_ids.masked_fill(is_padding, -1)
 
     return topk_weights, topk_ids

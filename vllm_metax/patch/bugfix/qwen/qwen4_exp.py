@@ -42,9 +42,12 @@ def kernel_warmup(worker, *, process_local_only: bool = False):
     # Avoid importing QSA for unrelated models. The helper checks actual model
     # owners and deduplicates compilation by cache/table layout and head counts.
     # It compiles sparse attention variants; the dynamic topk selector still JITs
-    # on demand. This addition also runs in process-local mode and currently does
-    # not consult enable_jit_warmup, unlike upstream QSA warmup.
-    if "vllm_metax.models.qwen4_exp.metax.qsa" in sys.modules:
+    # on demand. This addition also runs in process-local mode when JIT warmup is
+    # enabled, matching the upstream QSA warmup gate.
+    if (
+        worker.vllm_config.kernel_config.enable_jit_warmup
+        and "vllm_metax.models.qwen4_exp.metax.qsa" in sys.modules
+    ):
         from vllm_metax.models.qwen4_exp.metax.warmup import warmup_loaded_qsa
 
         warmup_loaded_qsa(worker)

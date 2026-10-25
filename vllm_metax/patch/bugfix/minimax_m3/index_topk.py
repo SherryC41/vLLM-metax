@@ -26,7 +26,7 @@
 #       to disable double-buffering (fits under the 64-KB ceiling), and
 #       floor `BLOCK_SIZE_Q` so `num_idx_heads * BLOCK_SIZE_Q >= 16`.
 #
-# Affected versions: vLLM 0.30.0 (ced6857afa0e), reviewed 2026-10-12.
+# Affected versions: vLLM 0.32.0 (5df63a7203cd), reviewed 2026-10-21.
 #
 # Remove at: Upstream index-score launches satisfy MACA shared-memory and minimum MMA
 #     tile limits, or the MACA backend removes those restrictions.
@@ -88,7 +88,17 @@ def minimax_m3_index_score(
         device=idx_q.device,
     )
     BLOCK_SIZE_Q = 64
-    grid_score = (triton.cdiv(max_query_len, BLOCK_SIZE_Q), batch * num_idx_heads)
+    n_q_tiles = triton.cdiv(max_query_len, BLOCK_SIZE_Q)
+    SCORE_TARGET_GRID = 48
+    split_k = max(
+        1,
+        min(max_block, SCORE_TARGET_GRID // max(1, n_q_tiles * batch * num_idx_heads)),
+    )
+    if not (
+        current_platform.is_cuda() and current_platform.is_device_capability((12, 0))
+    ):
+        split_k = 1
+    grid_score = (n_q_tiles, batch * num_idx_heads, split_k)
     _index_block_score_kernel[grid_score](
         idx_q,
         index_kv_cache,
@@ -111,7 +121,9 @@ def minimax_m3_index_score(
         block_table.stride(0),
         BLOCK_SIZE_Q=BLOCK_SIZE_Q,
         BLOCK_SIZE_K=SPARSE_BLOCK_SIZE,
+        USE_SPLIT_K=split_k > 1,
         # /-------------------- MetaX Modification --------------------\
+        # NOTE(metax): Single-stage launches fit MACA shared memory.
         num_stages=1,
         # \-------------------- MetaX Modification --------------------/
     )
@@ -165,6 +177,7 @@ def minimax_m3_index_decode_score(
     # /-------------------- MetaX Modification --------------------\
     # Same MACA 64-KB shared-memory ceiling as `_index_block_score_kernel`.
     # Set last so it always wins over the num_stages=2 branch above.
+    # NOTE(metax): Preserve MACA stage limit after platform-specific defaults.
     score_kwargs["num_stages"] = 1
     # \-------------------- MetaX Modification --------------------/
 
@@ -180,7 +193,7 @@ def minimax_m3_index_decode_score(
         )
     # split-K over seq blocks; chunk count depends only on shape constants so
     # the grid is fixed within a cuda graph.
-    TARGET_GRID = 512
+    TARGET_GRID = 4096
     MAX_NUM_KV_CHUNKS = 256
     # Use the configured max decode length to avoid Triton recompiles when
     # switching between qlen=1 and spec-decode verification batches.
