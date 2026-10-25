@@ -47,7 +47,8 @@ install(CODE "set(CMAKE_INSTALL_LOCAL_ONLY TRUE)" ALL_COMPONENTS)
 # Supported python versions.  These versions will be searched in order, the
 # first match will be selected.  These should be kept in sync with setup.py.
 #
-set(PYTHON_SUPPORTED_VERSIONS "3.10" "3.11" "3.12")
+# NOTE(metax): Match vLLM 0.32's minimum and the MACA wheel Python range.
+set(PYTHON_SUPPORTED_VERSIONS "3.11" "3.12")
 
 
 #
@@ -552,9 +553,9 @@ target_compile_options(_C_stable_libtorch PRIVATE
 # Needed to use cuda/hip APIs from C-shim
 if(VLLM_GPU_LANG STREQUAL "CUDA")
   # Set TORCH_TARGET_VERSION for stable ABI compatibility.
-  # This ensures we only use C-shim APIs available in PyTorch 2.11.
+  # NOTE(metax): The MACA SDK uses PyTorch 2.10's C-shim ABI.
   # _C_stable_libtorch is abi compatible with PyTorch >= TORCH_TARGET_VERSION
-  # which is currently set to 2.11.
+  # which is currently set to 2.10.
   target_compile_definitions(_C_stable_libtorch PRIVATE
     TORCH_TARGET_VERSION=0x020A000000000000ULL)
   target_compile_definitions(_C_stable_libtorch PRIVATE USE_CUDA)
@@ -656,9 +657,9 @@ target_compile_options(_moe_C_stable_libtorch PRIVATE
 # Needed to use cuda/hip APIs from C-shim
 if(VLLM_GPU_LANG STREQUAL "CUDA")
   # Set TORCH_TARGET_VERSION for stable ABI compatibility.
-  # This ensures we only use C-shim APIs available in PyTorch 2.11.
+  # NOTE(metax): The MACA SDK uses PyTorch 2.10's C-shim ABI.
   # _moe_C_stable_libtorch is abi compatible with PyTorch >= TORCH_TARGET_VERSION
-  # which is currently set to 2.11.
+  # which is currently set to 2.10.
   target_compile_definitions(_moe_C_stable_libtorch PRIVATE
     TORCH_TARGET_VERSION=0x020A000000000000ULL)
   target_compile_definitions(_moe_C_stable_libtorch PRIVATE USE_CUDA)
