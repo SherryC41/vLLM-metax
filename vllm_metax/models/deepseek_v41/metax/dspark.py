@@ -483,7 +483,7 @@ class DSparkDeepseekV4ForCausalLM(nn.Module):
         are skipped here. ``embed_tokens``/``lm_head`` are aliased from the target.
         """
         first_layer = self.model.layers[0]
-        use_mega_moe = first_layer.ffn.use_mega_moe
+        use_native_mega_moe = first_layer.ffn.use_native_mega_moe
         # Draft MoE layers use the dspark_* expert counts, not the
         # backbone's (see DeepseekV4MoE and the reference
         # ModelArgs.get_moe_config).
@@ -491,7 +491,7 @@ class DSparkDeepseekV4ForCausalLM(nn.Module):
             getattr(self.config, "dspark_n_routed_experts", 0)
             or self.config.n_routed_experts
         )
-        if use_mega_moe:
+        if use_native_mega_moe:
             expert_mapping = make_deepseek_v4_expert_params_mapping(n_draft_experts)
         else:
             expert_mapping = fused_moe_make_expert_params_mapping(
@@ -500,6 +500,7 @@ class DSparkDeepseekV4ForCausalLM(nn.Module):
                 ckpt_down_proj_name="w2",
                 ckpt_up_proj_name="w3",
                 num_experts=n_draft_experts,
+                num_redundant_experts=first_layer.ffn.n_redundant_experts,
             )
         expert_scale_suffix = (
             ".weight_scale"

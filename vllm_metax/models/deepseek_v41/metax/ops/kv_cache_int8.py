@@ -48,6 +48,7 @@ from __future__ import annotations
 from typing import Any
 
 import torch
+import vllm_metax.envs as mx_envs
 
 from vllm.triton_utils import tl, triton
 
@@ -315,6 +316,7 @@ def _torch_ref_qnorm_rope_kv_int8_insert(
     eps: float,
     block_size: int,
     rope_dim: int = INT8_ROPE_DIM,
+    apply_q_norm: bool = True,
 ) -> torch.Tensor:
     """Reference (torch) implementation of the fused Q/KV insert for INT8.
 
@@ -351,18 +353,23 @@ def _torch_ref_qnorm_rope_kv_int8_insert(
         ).flatten(-2)
         return torch.cat((nope, rot), dim=-1)
 
-    # ---- Q: RoPE + head padding only (fused op is called with apply_q_norm=False) ----
+    # ---- Q: optional per-head RMSNorm, RoPE and head padding ----
     q_out = torch.zeros(
         (q.shape[0], padded_heads, head_dim), dtype=q.dtype, device=q.device
     )
-    q_out[:, :n_heads] = _rope(q).to(q.dtype)
+    q_float = q.float()
+    if apply_q_norm:
+        q_float = q_float * torch.rsqrt(
+            q_float.square().mean(dim=-1, keepdim=True) + eps
+        )
+    q_out[:, :n_heads] = _rope(q_float).to(q.dtype)
 
     # ---- KV: RoPE + INT8 quant + paged store (block-segregated page) ----
     num_tokens = slot_mapping.shape[0]
     if num_tokens > 0:
         kv_roped = _rope(kv.float()[:num_tokens])
         grouped = kv_roped.view(num_tokens, INT8_SCALE_DIM, INT8_QUANT_BLOCK)
-        scales = grouped.abs().amax(dim=-1).clamp_min(INT8_MIN_SCALE) / INT8_MAX
+        scales = (grouped.abs().amax(dim=-1) / INT8_MAX).clamp_min(INT8_MIN_SCALE)
         scaled = grouped / scales.unsqueeze(-1)
         q_int8 = (
             torch.where(scaled >= 0, (scaled + 0.5).floor(), (scaled - 0.5).ceil())
@@ -412,6 +419,39 @@ def fused_qnorm_rope_kv_int8_insert(
     """
     Q(norm+RoPE) + KV(RoPE+INT8 quant+insert) for the ``int8_ds_mla`` cache.
     """
+    if not mx_envs.USE_PRECOMPILED_KERNEL:
+        # NOTE(metax): The fused MCOPLIB entry is absent from source builds.
+        # Keep Q math on device and use the existing native Triton KV writer;
+        # the bring-up reference's boolean indexing is not graph safe.
+        if q.ndim != 3 or q.shape[-1] != INT8_HEAD_DIM:
+            raise ValueError("INT8 Q must have shape [tokens, heads, 512]")
+        if padded_heads != 0 and padded_heads < q.shape[1]:
+            raise ValueError("padded_heads must cover all Q heads")
+        if k_cache.shape[1] != block_size:
+            raise ValueError("block_size must match the INT8 cache page")
+        q_out = torch.zeros(
+            (q.shape[0], padded_heads, INT8_HEAD_DIM), dtype=q.dtype, device=q.device
+        )
+        if padded_heads:
+            q_float = q.float()
+            if apply_q_norm:
+                q_float = q_float * torch.rsqrt(
+                    q_float.square().mean(dim=-1, keepdim=True) + eps
+                )
+            cos_sin = cos_sin_cache[positions].float()
+            cos, sin = cos_sin.chunk(2, dim=-1)
+            cos, sin = cos.unsqueeze(1), sin.unsqueeze(1)
+            nope = q_float[..., :INT8_NOPE_DIM]
+            rotary = q_float[..., INT8_NOPE_DIM:]
+            even, odd = rotary[..., 0::2], rotary[..., 1::2]
+            rotated = torch.stack(
+                (even * cos - odd * sin, even * sin + odd * cos), dim=-1
+            ).flatten(-2)
+            q_out[:, : q.shape[1]].copy_(torch.cat((nope, rotated), dim=-1).to(q.dtype))
+        quantize_and_insert_k_cache_int8(
+            kv, k_cache, slot_mapping, positions, cos_sin_cache
+        )
+        return q_out
     return torch.ops._C.fused_deepseek_v41_qnorm_rope_kv_rope_int8_insert(  # type: ignore[attr-defined]
         q,
         kv,
