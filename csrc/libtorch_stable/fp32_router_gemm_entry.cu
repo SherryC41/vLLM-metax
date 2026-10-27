@@ -134,7 +134,11 @@ void fp32_router_gemm(
 
   const torch::stable::accelerator::DeviceGuard device_guard(
       mat_a.get_device_index());
+  // NOTE(metax): The MACA implementation uses portable loads/reductions, not
+  // SM90 instructions.
+#ifndef USE_MACA
   STD_TORCH_CHECK(getSMVersion() >= 90, "fp32_router_gemm: requires SM90+");
+#endif
 
   auto stream = get_current_cuda_stream(mat_a.get_device_index());
   float* out_ptr = reinterpret_cast<float*>(output.mutable_data_ptr());

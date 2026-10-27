@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 
 import torch
 import vllm.envs as envs
+import vllm_metax.envs as mx_envs
 
 # Import upstream custom-op registrations first. MetaX overrides the GPTQ fake
 # impl below because the MetaX kernel exposes a different schema.
@@ -166,43 +167,6 @@ def cp_gather_indexer_k_quant_cache(
         )
 
 
-# TODO: remove duplicates with vllm/_custom_ops.py
-def top_k_per_row(
-    logits: torch.Tensor,
-    row_starts: torch.Tensor,
-    row_ends: torch.Tensor,
-    topk_indices: torch.Tensor,
-    num_rows: int,
-) -> None:
-    torch.ops._C.top_k_per_row(
-        logits,
-        row_starts,
-        row_ends,
-        topk_indices,
-        num_rows,
-        logits.stride(0),
-        logits.stride(1),
-    )
-
-
-def top_k_per_row_decode(
-    logits: torch.Tensor,
-    next_n: int,
-    seq_lens: torch.Tensor,
-    topk_indices: torch.Tensor,
-    num_rows: int,
-) -> None:
-    torch.ops._C.top_k_per_row_decode(
-        logits,
-        next_n,
-        seq_lens,
-        topk_indices,
-        num_rows,
-        logits.stride(0),
-        logits.stride(1),
-    )
-
-
 def grouped_topk(
     scores: torch.Tensor,
     num_expert_group: int,
@@ -270,7 +234,18 @@ def swiglustep_and_mul(
     clamp_limit: float = 7.0,
     alpha: float = 1.0,
     beta: float = 0.0,
-) -> int:
+) -> None:
+    if not mx_envs.USE_PRECOMPILED_KERNEL:
+        # NOTE(metax): The target clamp op has different semantics and no
+        # SWIGLUSTEP flag. Use the complete upstream activation instead.
+        if alpha != 1.0 or beta != 0.0:
+            raise NotImplementedError(
+                "Source SWIGLUSTEP supports alpha=1.0 and beta=0.0"
+            )
+        from vllm.model_executor.layers.activation import swiglustep_and_mul_triton
+
+        swiglustep_and_mul_triton(act_out, act_in, clamp_limit)
+        return
     return torch.ops._C.silu_and_mul_with_clamp(
         act_out,
         act_in,
@@ -291,6 +266,26 @@ def swiglu_step_and_mul_per_block_quant(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     num_tokens = input.shape[0]
     hidden_size = input.shape[-1] // 2
+
+    if not mx_envs.USE_PRECOMPILED_KERNEL:
+        # NOTE(metax): MCOPLIB's fused activation/quantizer is not part of the
+        # native extension. Preserve activation rounding before group quant.
+        from vllm.model_executor.layers.quantization.utils.fp8_utils import (
+            per_token_group_quant_fp8,
+        )
+
+        activated = torch.empty(
+            (num_tokens, hidden_size), device=input.device, dtype=input.dtype
+        )
+        swiglustep_and_mul(activated, input, clamp_limit, alpha, beta)
+        return per_token_group_quant_fp8(
+            activated,
+            group_size,
+            dtype=quant_dtype,
+            column_major_scales=False,
+            tma_aligned_scales=False,
+            use_ue8m0=False,
+        )
 
     output = torch.empty(
         (num_tokens, hidden_size), device=input.device, dtype=quant_dtype

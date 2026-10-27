@@ -206,15 +206,15 @@ endif()
 #
 set(VLLM_STABLE_EXT_SRC
     "csrc/libtorch_stable/torch_bindings.cpp"
-    # "csrc/libtorch_stable/cuda_view.cu"
+    "csrc/libtorch_stable/cuda_view.cu"
     "csrc/libtorch_stable/cuda_utils_kernels.cu"
     "csrc/libtorch_stable/activation_kernels.cu"
     "csrc/libtorch_stable/ngram_embedding_kernels.cu"
+    "csrc/libtorch_stable/vocab_parallel_embedding_kernels.cu"
     "csrc/libtorch_stable/quantization/activation_kernels.cu"
     "csrc/libtorch_stable/quantization/w8a8/int8/scaled_quant.cu"
     "csrc/libtorch_stable/quantization/w8a8/fp8/common.cu"
     "csrc/libtorch_stable/quantization/w8a8/fp8/per_token_group_quant.cu"
-    "csrc/libtorch_stable/quantization/w8a8/int8/per_token_group_quant.cu"
     "csrc/libtorch_stable/permute_cols.cu"
     "csrc/libtorch_stable/quantization/gptq/q_gemm.cu"
     "csrc/libtorch_stable/pos_encoding_kernels.cu"
@@ -233,6 +233,17 @@ set(VLLM_STABLE_EXT_SRC
   "csrc/libtorch_stable/fused_deepseek_v4_qnorm_rope_kv_insert_kernel.cu"
   "csrc/libtorch_stable/fused_kimi_k3_mla_key_concat_kv_cache_kernel.cu"
   "csrc/libtorch_stable/fused_deepseek_v4_qnorm_rope_kv_insert_kernel_bf16.cu")
+
+# NOTE(metax): MACA provides a per-row fallback for the cooperative-topk API;
+# it does not use NVIDIA cluster/TMA execution.
+if(USE_MACA)
+  list(APPEND VLLM_STABLE_EXT_SRC "csrc/libtorch_stable/cooperative_topk.cu")
+  # NOTE(metax): Torch 2.10's stable from_blob cannot retain a storage owner.
+  # Only the ownership bridge uses ATen's exact-version ABI.
+  list(APPEND VLLM_STABLE_EXT_SRC "csrc/libtorch_stable/cuda_view_compat.cpp")
+  set_source_files_properties("csrc/libtorch_stable/cuda_view_compat.cpp"
+    PROPERTIES COMPILE_OPTIONS "-UTORCH_TARGET_VERSION")
+endif()
 
 # support opt of gptq-marlin
 set_source_files_properties(
@@ -261,6 +272,9 @@ if(VLLM_GPU_LANG STREQUAL "CUDA")
     endif()
     message(STATUS "The VLLM_CUTLASS_SRC_DIR is set, using ${VLLM_CUTLASS_SRC_DIR} for compilation")
     FetchContent_Declare(cutlass SOURCE_DIR ${VLLM_CUTLASS_SRC_DIR})
+    # NOTE(metax): MATLASS headers are supplied by the installed SDK rather
+    # than a fetched CUTLASS project exporting these include directories.
+    set(CUTLASS_INCLUDE_DIR "${VLLM_CUTLASS_SRC_DIR}")
 
     list(APPEND VLLM_STABLE_EXT_SRC
       "csrc/libtorch_stable/cutlass_extensions/common.cpp"
@@ -308,7 +322,8 @@ if(VLLM_GPU_LANG STREQUAL "CUDA")
 
   # FP32 router GEMM (H=3072, E=256, M<=32). Requires SM90+ and CUDA >= 12.0.
   cuda_archs_sm90plus(FP32_ROUTER_GEMM_ARCHS "${CUDA_ARCHS}")
-  if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.0 AND FP32_ROUTER_GEMM_ARCHS)
+  # NOTE(metax): MACA uses its native launch instead of CUDA SM90/PDL.
+  if(USE_MACA OR (CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 12.0 AND FP32_ROUTER_GEMM_ARCHS))
     set(FP32_ROUTER_GEMM_SRCS
       "csrc/libtorch_stable/fp32_router_gemm_entry.cu"
       "csrc/libtorch_stable/fp32_router_gemm.cu")
@@ -559,7 +574,7 @@ if(VLLM_GPU_LANG STREQUAL "CUDA")
   target_compile_definitions(_C_stable_libtorch PRIVATE
     TORCH_TARGET_VERSION=0x020A000000000000ULL)
   target_compile_definitions(_C_stable_libtorch PRIVATE USE_CUDA)
-  if(COOPERATIVE_TOPK_ARCHS)
+  if(USE_MACA OR COOPERATIVE_TOPK_ARCHS)
     target_compile_definitions(_C_stable_libtorch PRIVATE
       VLLM_ENABLE_COOPERATIVE_TOPK=1)
   endif()
@@ -608,24 +623,9 @@ if(VLLM_GPU_LANG STREQUAL "CUDA")
     CUDA_ARCHS "${CUDA_ARCHS}")
 
 
-  # DeepSeek V3 router GEMM kernel requires SM90+ and CUDA >= 12.0.
-  # (fp32_router_gemm has been migrated to _C_stable_libtorch above.)
-  cuda_archs_sm90plus(SM90PLUS_ROUTER_GEMM_ARCHS "${CUDA_ARCHS}")
-  if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.0 AND SM90PLUS_ROUTER_GEMM_ARCHS)
-    set(DSV3_ROUTER_GEMM_SRC
-      "csrc/libtorch_stable/moe/dsv3_router_gemm_entry.cu"
-      "csrc/libtorch_stable/moe/dsv3_router_gemm_float_out.cu"
-      "csrc/libtorch_stable/moe/dsv3_router_gemm_bf16_out.cu")
-    set_gencode_flags_for_srcs(
-      SRCS "${DSV3_ROUTER_GEMM_SRC}"
-      CUDA_ARCHS "${SM90PLUS_ROUTER_GEMM_ARCHS}")
-    list(APPEND VLLM_MOE_EXT_SRC "${DSV3_ROUTER_GEMM_SRC}")
+  # NOTE(metax): Target 0.32 removed the legacy DSV3 MoE router.
+  # The supported FP32 router is compiled into _C_stable_libtorch above.
 
-    message(STATUS "Building DSV3 router GEMM kernels for archs: ${SM90PLUS_ROUTER_GEMM_ARCHS}")
-  else()
-    message(STATUS "Not building DSV3 router GEMM kernels as no compatible archs found"
-                   " (requires SM90+ and CUDA >= 12.0)")
-  endif()
 endif()
 
 

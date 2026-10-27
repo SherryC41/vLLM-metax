@@ -8,6 +8,16 @@
 // Note: We register under namespace "_C" so ops are accessible as
 // torch.ops._C.<op_name> for compatibility with existing code.
 STABLE_TORCH_LIBRARY_FRAGMENT(_C, ops) {
+  // NOTE(metax): Native MetaX caller compatibility.
+  ops.def(
+      "fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert_out("
+      "Tensor q_in, Tensor kv, Tensor! q_out, Tensor! k_cache, "
+      "Tensor slot_mapping, Tensor position_ids, Tensor cos_sin_cache, "
+      "int q_head_padded, float eps, int cache_block_size) -> ()");
+  // NOTE(metax): Native MetaX caller compatibility.
+  ops.def("awq_to_gptq_4bit(Tensor qweight) -> Tensor");
+  // NOTE(metax): Native MetaX caller compatibility.
+  ops.def("permute_cols(Tensor A, Tensor perm) -> Tensor");
   // Compute per-token-group FP8 quantized tensor and scaling factor.
   // The dummy arguments are here so we can correctly fuse with RMSNorm.
   ops.def(
@@ -27,12 +37,9 @@ STABLE_TORCH_LIBRARY_FRAGMENT(_C, ops) {
       "per_token_group_quant_int8(Tensor input, Tensor! output_q, Tensor! "
       "output_s, int group_size, float eps, float int8_min, float int8_max) -> "
       "()");
-  ops.def("permute_cols(Tensor A, Tensor perm) -> Tensor");
+  ops.def("get_cuda_view_from_cpu_tensor(Tensor cpu_tensor) -> Tensor");
 
 #ifndef USE_ROCM
-
-  // TODO: Remove this once ROCm upgrade to torch 2.11.
-  ops.def("get_cuda_view_from_cpu_tensor(Tensor cpu_tensor) -> Tensor");
 
   // Note about marlin kernel 'workspace' arguments:
   // Technically these should be mutable since they are modified by the kernel.
@@ -82,6 +89,7 @@ STABLE_TORCH_LIBRARY_FRAGMENT(_C, ops) {
   // conditionally compiled so impl registration is in source file
 
   // Marlin GEMM
+  // NOTE(metax): Keep the native MACA kernel ABI and explicit workspaces.
   ops.def(
       "marlin_gemm(Tensor a, Tensor? c_or_none, Tensor b_q_weight, "
       "Tensor? b_bias_or_none,Tensor b_scales, "
@@ -93,6 +101,7 @@ STABLE_TORCH_LIBRARY_FRAGMENT(_C, ops) {
   // conditionally compiled so impl registrations are in source file
 
   // gptq_marlin repack from GPTQ.
+  // NOTE(metax): Keep the native MACA kernel ABI and explicit workspaces.
   ops.def(
       "gptq_marlin_repack(Tensor b_q_weight, Tensor perm, "
       "SymInt size_k, SymInt size_n, int num_bits, bool is_a_8bit) -> Tensor");
@@ -185,30 +194,40 @@ STABLE_TORCH_LIBRARY_FRAGMENT(_C, ops) {
       "bool");
 
   // CUTLASS nvfp4 block scaled GEMM
-  //   ops.def(
-  //       "cutlass_scaled_fp4_mm(Tensor! out, Tensor a, Tensor b,"
-  //       "                      Tensor block_scale_a, Tensor block_scale_b,"
-  //       "                      Tensor alpha) -> ()");
+  // NOTE(metax): NVIDIA FP4 kernels are not built on MACA.
+  #ifndef USE_MACA
+  ops.def(
+      "cutlass_scaled_fp4_mm(Tensor! out, Tensor a, Tensor b,"
+      "                      Tensor block_scale_a, Tensor block_scale_b,"
+      "                      Tensor alpha) -> ()");
+  #endif
 
-  //   // cutlass nvfp4 block scaled group GEMM
-  //   ops.def(
-  //       "cutlass_fp4_group_mm(Tensor! out, Tensor a, Tensor b,"
-  //       " Tensor a_blockscale, Tensor b_blockscales, Tensor alphas,"
-  //       " Tensor problem_sizes, Tensor expert_offsets, Tensor sf_offsets) ->
-  //       ()");
+  // cutlass nvfp4 block scaled group GEMM
+  // NOTE(metax): NVIDIA FP4 kernels are not built on MACA.
+  #ifndef USE_MACA
+  ops.def(
+      "cutlass_fp4_group_mm(Tensor! out, Tensor a, Tensor b,"
+      " Tensor a_blockscale, Tensor b_blockscales, Tensor alphas,"
+      " Tensor problem_sizes, Tensor expert_offsets, Tensor sf_offsets) -> ()");
+  #endif
 
-  //   // cutlass mxfp4 block scaled group GEMM (MXFP4 x MXFP4 MoE)
-  //   ops.def(
-  //       "cutlass_mxfp4_group_mm(Tensor! out, Tensor a, Tensor b,"
-  //       " Tensor a_blockscale, Tensor b_blockscales,"
-  //       " Tensor problem_sizes, Tensor expert_offsets, Tensor sf_offsets) ->
-  //       ()");
+  // cutlass mxfp4 block scaled group GEMM (MXFP4 x MXFP4 MoE)
+  // NOTE(metax): NVIDIA FP4 kernels are not built on MACA.
+  #ifndef USE_MACA
+  ops.def(
+      "cutlass_mxfp4_group_mm(Tensor! out, Tensor a, Tensor b,"
+      " Tensor a_blockscale, Tensor b_blockscales,"
+      " Tensor problem_sizes, Tensor expert_offsets, Tensor sf_offsets) -> ()");
+  #endif
 
-  //   // Compute NVFP4 block quantized tensor.
-  //   ops.def(
-  //       "scaled_fp4_quant(Tensor input,"
-  //       "                 Tensor input_scale, bool "
-  //       "is_sf_swizzled_layout) -> (Tensor, Tensor)");
+  // Compute NVFP4 block quantized tensor.
+  // NOTE(metax): NVIDIA FP4 kernels are not built on MACA.
+  #ifndef USE_MACA
+  ops.def(
+      "scaled_fp4_quant(Tensor input,"
+      "                 Tensor input_scale, bool "
+      "is_sf_swizzled_layout) -> (Tensor, Tensor)");
+  #endif
 
   // Out variant
   // TODO: Add out_variant tag once PyTorch supports it (added in 2.11)
@@ -218,45 +237,60 @@ STABLE_TORCH_LIBRARY_FRAGMENT(_C, ops) {
   // via torch.library.Library.define(..., tags=(torch.Tag.out_variant,))
   // with the .impl remaining in C++.
   // See pytorch/pytorch#176117.
-  //   ops.def(
-  //       "scaled_fp4_quant.out(Tensor input,"
-  //       "                     Tensor input_scale, bool "
-  //       "is_sf_swizzled_layout, *, Tensor(a!) output, Tensor(b!)
-  //       output_scale) "
-  //       "-> ()");
+  // NOTE(metax): NVIDIA FP4 kernels are not built on MACA.
+  #ifndef USE_MACA
+  ops.def(
+      "scaled_fp4_quant.out(Tensor input,"
+      "                     Tensor input_scale, bool "
+      "is_sf_swizzled_layout, *, Tensor(a!) output, Tensor(b!) output_scale) "
+      "-> ()");
+  #endif
 
-  //   // Compute NVFP4 experts quantization.
-  //   ops.def(
-  //       "scaled_fp4_experts_quant(Tensor! output, Tensor! output_scale,"
-  //       "Tensor input, Tensor input_global_scale, Tensor
-  //       input_offset_by_experts," "Tensor output_scale_offset_by_experts) ->
-  //       ()");
+  // Compute NVFP4 experts quantization.
+  // NOTE(metax): NVIDIA FP4 kernels are not built on MACA.
+  #ifndef USE_MACA
+  ops.def(
+      "scaled_fp4_experts_quant(Tensor! output, Tensor! output_scale,"
+      "Tensor input, Tensor input_global_scale, Tensor input_offset_by_experts,"
+      "Tensor output_scale_offset_by_experts) -> ()");
+  #endif
 
-  //   // Fused SiLU+Mul+NVFP4 experts quantization.
-  //   ops.def(
-  //       "silu_and_mul_scaled_fp4_experts_quant(Tensor! output, Tensor! "
-  //       "output_scale,"
-  //       "Tensor input, Tensor input_global_scale, Tensor
-  //       input_offset_by_experts," "Tensor output_scale_offset_by_experts) ->
-  //       ()");
+  // Fused SiLU+Mul+NVFP4 experts quantization.
+  // NOTE(metax): NVIDIA FP4 kernels are not built on MACA.
+  #ifndef USE_MACA
+  ops.def(
+      "silu_and_mul_scaled_fp4_experts_quant(Tensor! output, Tensor! "
+      "output_scale,"
+      "Tensor input, Tensor input_global_scale, Tensor input_offset_by_experts,"
+      "Tensor output_scale_offset_by_experts) -> ()");
+  #endif
 
-  //   // Compute MXFP4 experts quantization (32-element blocks, E8M0 SFs).
-  //   ops.def(
-  //       "mxfp4_experts_quant(Tensor! output, Tensor! output_scale,"
-  //       "Tensor input, Tensor input_offset_by_experts,"
-  //       "Tensor output_scale_offset_by_experts, int n_experts) -> ()");
+  // Compute MXFP4 experts quantization (32-element blocks, E8M0 SFs).
+  // NOTE(metax): NVIDIA FP4 kernels are not built on MACA.
+  #ifndef USE_MACA
+  ops.def(
+      "mxfp4_experts_quant(Tensor! output, Tensor! output_scale,"
+      "Tensor input, Tensor input_offset_by_experts,"
+      "Tensor output_scale_offset_by_experts, int n_experts) -> ()");
+  #endif
 
-  //   // Fused SiLU+Mul+MXFP4 experts quantization.
-  //   ops.def(
-  //       "silu_and_mul_mxfp4_experts_quant(Tensor! output, Tensor! "
-  //       "output_scale,"
-  //       "Tensor input, Tensor input_offset_by_experts,"
-  //       "Tensor output_scale_offset_by_experts, int n_experts) -> ()");
+  // Fused SiLU+Mul+MXFP4 experts quantization.
+  // NOTE(metax): NVIDIA FP4 kernels are not built on MACA.
+  #ifndef USE_MACA
+  ops.def(
+      "silu_and_mul_mxfp4_experts_quant(Tensor! output, Tensor! "
+      "output_scale,"
+      "Tensor input, Tensor input_offset_by_experts,"
+      "Tensor output_scale_offset_by_experts, int n_experts) -> ()");
+  #endif
 
-  //   // Fused SiLU+Mul+NVFP4 quantization.
-  //   ops.def(
-  //       "silu_and_mul_nvfp4_quant(Tensor! result, Tensor! result_block_scale,
-  //       " "Tensor input, Tensor input_global_scale) -> ()");
+  // Fused SiLU+Mul+NVFP4 quantization.
+  // NOTE(metax): NVIDIA FP4 kernels are not built on MACA.
+  #ifndef USE_MACA
+  ops.def(
+      "silu_and_mul_nvfp4_quant(Tensor! result, Tensor! result_block_scale, "
+      "Tensor input, Tensor input_global_scale) -> ()");
+  #endif
 
   // Check if cutlass_scaled_mm_fp4 is supported for CUDA devices
   // of the given capability
@@ -318,6 +352,7 @@ STABLE_TORCH_LIBRARY_FRAGMENT(_C, ops) {
       "                                     int sm_count, int num_kv_splits) "
       "-> int");
   // Quantized GEMM for AWQ.
+  // NOTE(metax): Keep the native MACA kernel ABI and explicit workspaces.
   ops.def(
       "awq_gemm(Tensor _in_feats, Tensor _kernel, Tensor _scaling_factors, "
       "Tensor _zeros, SymInt split_k_iters, Tensor _temp_space, bool "
@@ -328,9 +363,6 @@ STABLE_TORCH_LIBRARY_FRAGMENT(_C, ops) {
       "awq_dequantize(Tensor _kernel, Tensor _scaling_factors, "
       "Tensor _zeros, SymInt split_k_iters, int thx, int thy) -> Tensor");
 
-  // Convert AWQ to GPTQ
-  ops.def("awq_to_gptq_4bit(Tensor qweight) -> Tensor");
-
   // DeepSeek V3 fused A GEMM (SM 9.0+, bf16 only, 1-16 tokens).
   // conditionally compiled so impl registration is in source file
   ops.def(
@@ -340,21 +372,6 @@ STABLE_TORCH_LIBRARY_FRAGMENT(_C, ops) {
   // BF16/FP32 x FP32 -> FP32 router GEMM for H=3072, E=256, M<=32 (SM90+).
   // conditionally compiled so impl registration is in source file
   ops.def("fp32_router_gemm(Tensor! output, Tensor mat_a, Tensor mat_b) -> ()");
-
-  // reorder weight for AllSpark Ampere W8A16 Fused Gemm kernel
-  ops.def(
-      "rearrange_kn_weight_as_n32k16_order(Tensor b_qweight, Tensor b_scales, "
-      "Tensor? b_zeros, "
-      "bool has_zp, Tensor! b_qweight_reorder, Tensor! b_scales_reorder, "
-      "Tensor!? b_zeros_reorder, "
-      "int K, int N, int N_32align) -> ()");
-
-  // AllSpark quantization ops
-  ops.def(
-      "allspark_w8a16_gemm(Tensor a, Tensor b_qweight, Tensor b_scales, "
-      "Tensor? b_qzeros, "
-      "SymInt n, SymInt group_size, SymInt sm_count, SymInt sm_version, SymInt "
-      "CUBLAS_M_THRESHOLD, bool has_zp, bool n32k16_reorder) -> Tensor");
 #endif
 
   // Merge attn states
@@ -438,16 +455,25 @@ STABLE_TORCH_LIBRARY_FRAGMENT(_C, ops) {
       "bool is_neox, Tensor position_ids, "
       "int forced_token_heads_per_warp=-1) -> ()");
 
+  // q_head_padded is the padded Q head count of the returned tensor, or 0 to
+  // do the KV insert alone and return an empty tensor.  The Q knobs are
+  // independent: apply_q_norm and apply_q_rope each drop that step for Q
+  // alone (KV is always rotated), and is_q_interleaved reads and writes Q in
+  // FlashMLA's mega-attention chunk-interleaved layout, which moves the
+  // padding heads to the tail of every head-dim chunk.
+  ops.def(
+      "fused_deepseek_v4_kv_rope_insert("
+      "Tensor kv, Tensor! k_cache, Tensor slot_mapping, Tensor position_ids, "
+      "Tensor cos_sin_cache, int cache_block_size, Tensor? fp8_scale=None, "
+      "bool kv_mxfp8=False) -> "
+      "()");
   ops.def(
       "fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert("
       "Tensor q_in, Tensor kv, Tensor! k_cache, "
       "Tensor slot_mapping, Tensor position_ids, Tensor cos_sin_cache, "
-      "int q_head_padded, float eps, int cache_block_size) -> Tensor");
-  ops.def(
-      "fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert_out("
-      "Tensor q_in, Tensor kv, Tensor! q_out, Tensor! k_cache, "
-      "Tensor slot_mapping, Tensor position_ids, Tensor cos_sin_cache, "
-      "int q_head_padded, float eps, int cache_block_size) -> ()");
+      "int q_head_padded, float eps, int cache_block_size, "
+      "bool apply_q_norm=True, bool kv_mxfp8=False, bool apply_q_rope=True, "
+      "bool is_q_interleaved=False) -> Tensor");
 
   // FlashInfer V4 full-cache variants: write Q in place (bf16) or to a separate
   // FP8 tensor, and KV into a contiguous 512-wide token-strided cache.
@@ -455,13 +481,13 @@ STABLE_TORCH_LIBRARY_FRAGMENT(_C, ops) {
       "fused_deepseek_v4_qnorm_rope_kv_rope_full_cache_bf16_insert("
       "Tensor! q, Tensor kv, Tensor! k_cache, Tensor slot_mapping, "
       "Tensor position_ids, Tensor cos_sin_cache, float eps, "
-      "int cache_block_size) -> ()");
+      "int cache_block_size, bool apply_q_norm=True) -> ()");
   ops.def(
       "fused_deepseek_v4_qnorm_rope_kv_rope_full_cache_fp8_insert("
       "Tensor q, Tensor kv, Tensor! q_fp8, Tensor! k_cache, "
       "Tensor slot_mapping, Tensor position_ids, Tensor cos_sin_cache, "
       "Tensor fp8_scale, Tensor q_fp8_scale_inv, float eps, "
-      "int cache_block_size) -> ()");
+      "int cache_block_size, bool apply_q_norm=True) -> ()");
 
   // Kimi-K3 MLA epilogues: optional RoPE followed by concat/cache insertion.
   ops.def(
@@ -476,6 +502,13 @@ STABLE_TORCH_LIBRARY_FRAGMENT(_C, ops) {
       "Tensor! k_out, Tensor! k_cache, Tensor slot_mapping, "
       "int cache_block_size, Tensor? position_ids=None, "
       "Tensor? cos_sin_cache=None) -> ()");
+  ops.def(
+      "fused_kimi_k3_mla_kv_concat(Tensor k_nope, Tensor k_pe, Tensor! k_out) "
+      "-> ()");
+  ops.def(
+      "fused_kimi_k3_mla_kv_concat_quant_fp8("
+      "Tensor k_nope, Tensor k_pe, Tensor v, Tensor! k_fp8, Tensor! v_fp8) "
+      "-> ()");
   ops.def(
       "fused_kimi_k3_mla_qkv_quant_kv_cache_fp8_insert("
       "Tensor q, Tensor k_nope, Tensor k_pe, Tensor kv_c_normed, Tensor v, "
@@ -525,7 +558,8 @@ STABLE_TORCH_LIBRARY_FRAGMENT(_C, ops) {
       "Tensor!? kv_cache, Tensor!? index_cache, "
       "int block_size, Tensor!? q_out, Tensor!? index_q_out, "
       "str kv_cache_dtype, bool skip_index_branch=False, "
-      "Tensor!? q_fp8_out=None, float q_fp8_scale=1.0) -> ()");
+      "Tensor!? q_fp8_out=None, float q_fp8_scale=1.0, "
+      "Tensor? kv_k_scale=None, Tensor? kv_v_scale=None) -> ()");
 
 #ifdef VLLM_ENABLE_FUSED_KDA_DECODE
   ops.def(
@@ -537,12 +571,44 @@ STABLE_TORCH_LIBRARY_FRAGMENT(_C, ops) {
       "Tensor? norm_weight=None, float norm_eps=1e-5) -> ()");
 #endif
 
+#ifdef VLLM_ENABLE_FUSED_GDN_DECODE
+  ops.def(
+      "fused_gdn_decode_post_conv_mtp("
+      "Tensor mixed_qkv, Tensor a, Tensor b, Tensor A_log, Tensor dt_bias, "
+      "Tensor state_indices, Tensor cu_seqlens, Tensor num_accepted_tokens, "
+      "Tensor! state, Tensor output_gate, Tensor norm_weight, Tensor! out, "
+      "float scale, float norm_eps=1e-5, "
+      "str output_gate_activation='silu') -> ()");
+#endif
+
+#ifdef VLLM_ENABLE_FUSED_KDA_CHUNK
+  ops.def(
+      "fused_kda_prologue("
+      "Tensor q, Tensor k, Tensor v, Tensor raw_g, Tensor raw_beta, "
+      "Tensor A_log, Tensor dt_bias, Tensor! qg, Tensor! w, Tensor! u, "
+      "Tensor! kg_t, Tensor! aqk, Tensor! decay, Tensor cu_seqlens, "
+      "Tensor chunk_indices, Tensor? conv_weight, Tensor(e!)? conv_state, "
+      "Tensor? conv_state_indices, Tensor? conv_has_initial_state, "
+      "float scale, float lower_bound) -> ()");
+  ops.def(
+      "fused_kda_chunk("
+      "Tensor qg, Tensor w, Tensor u, Tensor kg_t, Tensor aqk, Tensor decay, "
+      "Tensor? initial_state, Tensor(a!)? final_state, Tensor! out, "
+      "Tensor cu_seqlens, Tensor chunk_offsets, float scale, "
+      "Tensor(b!)? group_state, int groups, "
+      "Tensor(c!)? checkpoint_state=None, Tensor? checkpoint_offsets=None, "
+      "Tensor? checkpoint_state_indices=None, Tensor(d!)? state_cache=None, "
+      "Tensor? state_indices=None, Tensor? has_initial_state=None) -> ()");
+#endif
+
 #ifdef VLLM_ENABLE_KIMI_K3_ATTN_RES
   ops.def(
       "kimi_k3_attn_res("
-      "Tensor! prefix, Tensor delta, Tensor blocks, Tensor norm_weight, "
-      "Tensor qk_weight, Tensor output_norm_weight, Tensor! output, "
-      "int num_blocks, float eps, float output_norm_eps) -> ()");
+      "Tensor! prefix, Tensor? delta, Tensor! blocks, Tensor norm_weight, "
+      "Tensor qk_weight, Tensor? output_norm_weight, Tensor! output, "
+      "int num_blocks, "
+      "int block_write_idx, float eps, "
+      "float output_norm_eps) -> ()");
 #endif
 
   // Apply repetition penalties to logits in-place.
@@ -611,9 +677,22 @@ STABLE_TORCH_LIBRARY_FRAGMENT(_C, ops) {
   ops.def(
       "situ_and_mul(Tensor! out, Tensor input, float beta=1.0, float "
       "linear_beta=-1.0) -> ()");
+  // Fused SituGLU activation + dynamic FP8 quantization for the Humming w2 path
+  // (writes the fp8 down input and its float32 scale). group_size=0 ->
+  // per-token scale [.., 1]; group_size=128 -> k-major block-FP8 scale [..,
+  // d/128].
+  ops.def(
+      "situ_and_mul_quant(Tensor! out, Tensor! scale, Tensor input, "
+      "float beta=1.0, float linear_beta=-1.0, int group_size=0, "
+      "Tensor? num_valid_tokens=None, int topk=1) -> ()");
   ops.def(
       "masked_situ_and_mul(Tensor! out, Tensor input, Tensor "
       "expert_num_tokens, float beta=1.0, float linear_beta=-1.0) -> ()");
+  ops.def(
+      "masked_moe_activation(Tensor! out, Tensor input, Tensor "
+      "valid_token_counts, str activation, float clamp_limit=0.0, float "
+      "alpha=1.0, float beta=0.0, float situ_beta=1.0, float "
+      "situ_linear_beta=-1.0) -> ()");
 
   // GELU implementation used in GPT-2.
   ops.def("gelu_new(Tensor! out, Tensor input) -> ()");
@@ -660,6 +739,7 @@ STABLE_TORCH_LIBRARY_FRAGMENT(_C, ops) {
   // Quantized GEMM for GPTQ.
   // Note: even though the C++ inferred schema is correct for this op, it seems
   // to prevent the meta function registry.
+  // NOTE(metax): Keep the native MACA kernel ABI and explicit workspaces.
   ops.def(
       "gptq_gemm(Tensor a, Tensor b_q_weight, Tensor b_gptq_qzeros, "
       "Tensor b_gptq_scales, Tensor b_g_idx, bool use_exllama, int bit, int "
@@ -667,6 +747,7 @@ STABLE_TORCH_LIBRARY_FRAGMENT(_C, ops) {
       "Tensor temp_space, bool dtype_bf16)-> Tensor");
 
   // Post processing for GPTQ.
+  // NOTE(metax): Keep the native MACA kernel ABI and explicit workspaces.
   ops.def("gptq_shuffle(Tensor! q_weight, Tensor q_perm, int bit) -> ()");
 
   // Mamba selective scan kernel
@@ -690,6 +771,14 @@ STABLE_TORCH_LIBRARY_FRAGMENT(_C, ops) {
   // LongCat n-gram embedding index kernel. All tensor args are marked mutable
   // to match the (non-const) stable-Tensor& C++ signature; only ne_token_table
   // and n_gram_ids are actually written in place.
+  // Fused vocab-parallel embedding: gather the rows this rank owns and write
+  // zeros for the rest, so the following all-reduce reconstructs the full
+  // embedding.
+  ops.def(
+      "vocab_parallel_embedding(Tensor! out, Tensor input_ids, Tensor weight, "
+      "int org_vocab_start_index, int org_vocab_end_index, "
+      "int num_org_vocab_padding, int added_vocab_start_index, "
+      "int added_vocab_end_index) -> ()");
   ops.def(
       "ngram_compute_n_gram_ids(int ne_n, int ne_k, Tensor(a!) ne_weights, "
       "Tensor(b!) ne_mods, Tensor(c!) exclusive_ne_embedder_size_sums, "
@@ -699,8 +788,16 @@ STABLE_TORCH_LIBRARY_FRAGMENT(_C, ops) {
 }
 
 STABLE_TORCH_LIBRARY_IMPL(_C, CUDA, ops) {
+  // NOTE(metax): Native MetaX caller compatibility.
+  ops.impl("fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert_out",
+           TORCH_BOX(&fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert_out));
+  // NOTE(metax): Native MetaX caller compatibility.
+  ops.impl("awq_to_gptq_4bit", TORCH_BOX(&awq_to_gptq_4bit));
+  // NOTE(metax): Native MetaX caller compatibility.
+  ops.impl("permute_cols", TORCH_BOX(&permute_cols));
   // LongCat n-gram embedding index kernel.
   ops.impl("ngram_compute_n_gram_ids", TORCH_BOX(&ngram_compute_n_gram_ids));
+  ops.impl("vocab_parallel_embedding", TORCH_BOX(&vocab_parallel_embedding));
 
   // Per-token group quantization
   ops.impl("per_token_group_fp8_quant", TORCH_BOX(&per_token_group_quant_fp8));
@@ -708,8 +805,6 @@ STABLE_TORCH_LIBRARY_IMPL(_C, CUDA, ops) {
            TORCH_BOX(&per_token_group_quant_8bit_packed));
   ops.impl("per_token_group_quant_int8",
            TORCH_BOX(&per_token_group_quant_int8));
-
-  ops.impl("permute_cols", TORCH_BOX(&permute_cols));
 
 #ifndef USE_ROCM
   // CUTLASS scaled_mm ops
@@ -722,29 +817,27 @@ STABLE_TORCH_LIBRARY_IMPL(_C, CUDA, ops) {
   ops.impl("get_cutlass_batched_moe_mm_data",
            TORCH_BOX(&get_cutlass_batched_moe_mm_data));
 
+  // NOTE(metax): NVIDIA FP4 implementations are not linked on MACA.
+  #ifndef USE_MACA
   // FP4/NVFP4 ops
-  //   ops.impl("cutlass_scaled_fp4_mm", TORCH_BOX(&cutlass_scaled_fp4_mm));
-  //   ops.impl("scaled_fp4_quant", TORCH_BOX(&scaled_fp4_quant_func));
-  //   ops.impl("scaled_fp4_quant.out", TORCH_BOX(&scaled_fp4_quant_out));
-  //   ops.impl("scaled_fp4_experts_quant",
-  //   TORCH_BOX(&scaled_fp4_experts_quant));
-  //   ops.impl("silu_and_mul_scaled_fp4_experts_quant",
-  //            TORCH_BOX(&silu_and_mul_scaled_fp4_experts_quant));
-  //   ops.impl("silu_and_mul_nvfp4_quant",
-  //   TORCH_BOX(&silu_and_mul_nvfp4_quant));
-  // mxfp4_experts_quant: registered in mxfp4_experts_quant.cu (SM100 only).
-  // W4A8 ops: registered in w4a8_mm_entry.cu / w4a8_grouped_mm_entry.cu.
+  ops.impl("cutlass_scaled_fp4_mm", TORCH_BOX(&cutlass_scaled_fp4_mm));
+  ops.impl("scaled_fp4_quant", TORCH_BOX(&scaled_fp4_quant_func));
+  ops.impl("scaled_fp4_quant.out", TORCH_BOX(&scaled_fp4_quant_out));
+  ops.impl("scaled_fp4_experts_quant", TORCH_BOX(&scaled_fp4_experts_quant));
+  ops.impl("silu_and_mul_scaled_fp4_experts_quant",
+           TORCH_BOX(&silu_and_mul_scaled_fp4_experts_quant));
+  ops.impl("silu_and_mul_nvfp4_quant", TORCH_BOX(&silu_and_mul_nvfp4_quant));
+    // mxfp4_experts_quant: registered in mxfp4_experts_quant.cu (SM100 only).
+    // W4A8 ops: registered in w4a8_mm_entry.cu / w4a8_grouped_mm_entry.cu.
+
+  #endif
 
   // AWQ ops
   ops.impl("awq_gemm", TORCH_BOX(&awq_gemm));
   ops.impl("awq_dequantize", TORCH_BOX(&awq_dequantize));
-  ops.impl("awq_to_gptq_4bit", TORCH_BOX(&awq_to_gptq_4bit));
 
   // DSV3 fused A GEMM: conditionally compiled so impl registration is in
   // source file (dsv3_fused_a_gemm.cu)
-
-  // AllSpark ops: conditionally compiled so impl registrations are in source
-  // files (allspark_repack.cu and allspark_qgemm_w8a16.cu)
 #endif
 
   ops.impl("merge_attn_states", TORCH_BOX(&merge_attn_states));
@@ -768,10 +861,10 @@ STABLE_TORCH_LIBRARY_IMPL(_C, CUDA, ops) {
   // Positional encoding kernels (shared CUDA/ROCm)
   ops.impl("rotary_embedding", TORCH_BOX(&rotary_embedding));
   ops.impl("fused_qk_norm_rope", TORCH_BOX(&fused_qk_norm_rope));
+  ops.impl("fused_deepseek_v4_kv_rope_insert",
+           TORCH_BOX(&fused_deepseek_v4_kv_rope_insert));
   ops.impl("fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert",
            TORCH_BOX(&fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert));
-  ops.impl("fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert_out",
-           TORCH_BOX(&fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert_out));
   ops.impl(
       "fused_deepseek_v4_qnorm_rope_kv_rope_full_cache_bf16_insert",
       TORCH_BOX(&fused_deepseek_v4_qnorm_rope_kv_rope_full_cache_bf16_insert));
@@ -782,6 +875,10 @@ STABLE_TORCH_LIBRARY_IMPL(_C, CUDA, ops) {
            TORCH_BOX(&fused_kimi_k3_mla_key_concat_kv_cache_insert));
   ops.impl("fused_kimi_k3_mla_key_concat_ds_mla_insert",
            TORCH_BOX(&fused_kimi_k3_mla_key_concat_ds_mla_insert));
+  ops.impl("fused_kimi_k3_mla_kv_concat",
+           TORCH_BOX(&fused_kimi_k3_mla_kv_concat));
+  ops.impl("fused_kimi_k3_mla_kv_concat_quant_fp8",
+           TORCH_BOX(&fused_kimi_k3_mla_kv_concat_quant_fp8));
   ops.impl("fused_kimi_k3_mla_qkv_quant_kv_cache_fp8_insert",
            TORCH_BOX(&fused_kimi_k3_mla_qkv_quant_kv_cache_fp8_insert));
   ops.impl("fused_kimi_k3_mla_decode_q_concat_kv_cache_insert",
@@ -797,6 +894,16 @@ STABLE_TORCH_LIBRARY_IMPL(_C, CUDA, ops) {
            TORCH_BOX(&fused_minimax_m3_qknorm_rope_kv_insert));
 #ifdef VLLM_ENABLE_FUSED_KDA_DECODE
   ops.impl("fused_kda_decode", TORCH_BOX(&fused_kda_decode));
+#endif
+
+#ifdef VLLM_ENABLE_FUSED_GDN_DECODE
+  ops.impl("fused_gdn_decode_post_conv_mtp",
+           TORCH_BOX(&fused_gdn_decode_post_conv_mtp));
+#endif
+
+#ifdef VLLM_ENABLE_FUSED_KDA_CHUNK
+  ops.impl("fused_kda_prologue", TORCH_BOX(&fused_kda_prologue));
+  ops.impl("fused_kda_chunk", TORCH_BOX(&fused_kda_chunk));
 #endif
 
 #ifdef VLLM_ENABLE_KIMI_K3_ATTN_RES
@@ -825,7 +932,9 @@ STABLE_TORCH_LIBRARY_IMPL(_C, CUDA, ops) {
   ops.impl("fatrelu_and_mul", TORCH_BOX(&fatrelu_and_mul));
   ops.impl("swigluoai_and_mul", TORCH_BOX(&swigluoai_and_mul));
   ops.impl("situ_and_mul", TORCH_BOX(&situ_and_mul));
+  ops.impl("situ_and_mul_quant", TORCH_BOX(&situ_and_mul_quant));
   ops.impl("masked_situ_and_mul", TORCH_BOX(&masked_situ_and_mul));
+  ops.impl("masked_moe_activation", TORCH_BOX(&masked_moe_activation));
   ops.impl("gelu_new", TORCH_BOX(&gelu_new));
   ops.impl("gelu_fast", TORCH_BOX(&gelu_fast));
   ops.impl("gelu_quick", TORCH_BOX(&gelu_quick));
@@ -850,10 +959,10 @@ STABLE_TORCH_LIBRARY_IMPL(_C, CUDA, ops) {
   ops.impl("selective_scan_fwd", TORCH_BOX(&selective_scan_fwd));
 }
 
-// STABLE_TORCH_LIBRARY_IMPL(_C, CPU, ops) {
-//   ops.impl("get_cuda_view_from_cpu_tensor",
-//            TORCH_BOX(&get_cuda_view_from_cpu_tensor));
-// }
+STABLE_TORCH_LIBRARY_IMPL(_C, CPU, ops) {
+  ops.impl("get_cuda_view_from_cpu_tensor",
+           TORCH_BOX(&get_cuda_view_from_cpu_tensor));
+}
 
 STABLE_TORCH_LIBRARY_FRAGMENT(_C_cuda_utils, cuda_utils) {
   cuda_utils.def("get_device_attribute(int attribute, int device_id) -> int");
@@ -887,6 +996,13 @@ STABLE_TORCH_LIBRARY_IMPL(_C, CompositeExplicitAutograd, ops) {
 
 // Cache ops
 STABLE_TORCH_LIBRARY_FRAGMENT(_C_cache_ops, ops) {
+  // NOTE(metax): Native MetaX caller compatibility.
+  ops.def(
+      "cp_gather_indexer_k_cache(Tensor kv_cache, Tensor! dst_k, "
+      "Tensor block_table, Tensor cu_seq_lens) -> ()");
+  // NOTE(metax): Native MetaX caller compatibility.
+  ops.def(
+      "indexer_k_cache(Tensor k, Tensor! kv_cache, Tensor slot_mapping) -> ()");
   // Swap in (out) the cache blocks from src to dst.
   ops.def(
       "swap_blocks(Tensor src, Tensor! dst,"
@@ -923,14 +1039,81 @@ STABLE_TORCH_LIBRARY_FRAGMENT(_C_cache_ops, ops) {
       "                     str kv_cache_dtype,"
       "                     Tensor scale) -> ()");
 
-  // Grouped concat_and_cache_mla across all layers (bf16 only). Each
-  // layer's cache base pointer is read from kv_cache_ptrs.
+  // Grouped concat_and_cache_mla across all layers. Each layer's cache base
+  // pointer and optional plain-FP8 scale are read from device tensors.
   ops.def(
       "concat_and_cache_mla_grouped(Tensor kv_c, Tensor k_pe,"
       "                             Tensor kv_cache_ptrs,"
       "                             Tensor slot_mapping,"
       "                             int block_size, int block_stride,"
-      "                             int entry_stride) -> ()");
+      "                             int entry_stride,"
+      "                             Tensor? kv_scales=None,"
+      "                             str kv_cache_dtype='auto') -> ()");
+
+#ifndef USE_ROCM
+  // NOTE(metax): HiSparse row copies require NVIDIA PTX.
+  #ifndef USE_MACA
+  ops.def(
+      "hisparse_resolve_residency(Tensor host_cache,"
+      "                 Tensor! hot_cache,"
+      "                 Tensor hot_block_table,"
+      "                 Tensor global_indices,"
+      "                 Tensor! hot_indices,"
+      "                 Tensor! device_global_indices,"
+      "                 Tensor! lru_slots,"
+      "                 Tensor? request_state_indices,"
+      "                 int region_stride,"
+      "                 int max_union_rows,"
+      "                 Tensor(a!)? miss_mask=None,"
+      "                 Tensor(b!)? stats=None,"
+      "                 Tensor(c!)? attention_indices=None,"
+      "                 int attention_block_stride=0,"
+      "                 Tensor? request_ids=None,"
+      "                 Tensor? source_block_table=None,"
+      "                 int source_block_size=0,"
+      "                 Tensor(d!)? resolved_global_indices=None,"
+      "                 Tensor(e!)? valid_counts=None,"
+      "                 Tensor(f!)? swap_host_physical_rows=None,"
+      "                 Tensor(g!)? swap_device_physical_rows=None,"
+      "                 Tensor(h!)? swap_counts=None,"
+      "                 Tensor? resident_block_table=None,"
+      "                 int resident_block_size=0,"
+      "                 int resident_null_block=0) -> ()");
+  #endif
+
+  // NOTE(metax): HiSparse row copies require NVIDIA PTX.
+  #ifndef USE_MACA
+  ops.def(
+      "hisparse_invalidate_written_slots(Tensor! device_global_indices,"
+      "                                   Tensor request_state_indices,"
+      "                                   Tensor req_id_per_token,"
+      "                                   Tensor written_slots) -> ()");
+  #endif
+
+  // NOTE(metax): HiSparse row copies require NVIDIA PTX.
+  #ifndef USE_MACA
+  ops.def(
+      "hisparse_gather_plan(Tensor host_cache,"
+      "                     Tensor! hot_cache,"
+      "                     Tensor global_indices,"
+      "                     Tensor hot_indices,"
+      "                     Tensor miss_mask,"
+      "                     Tensor? request_state_indices,"
+      "                     Tensor(a!)? attention_indices=None,"
+      "                     int attention_block_stride=0) -> ()");
+  #endif
+
+  // NOTE(metax): HiSparse row copies require NVIDIA PTX.
+  #ifndef USE_MACA
+  ops.def(
+      "hisparse_gather_compact(Tensor host_cache,"
+      "                        Tensor! hot_cache,"
+      "                        Tensor miss_global_indices,"
+      "                        Tensor miss_hot_indices,"
+      "                        Tensor miss_counts) -> ()");
+  #endif
+
+#endif  // !USE_ROCM
 
   // Rotate Q and K, then write to kv cache for MLA
   ops.def(
@@ -968,7 +1151,12 @@ STABLE_TORCH_LIBRARY_FRAGMENT(_C_cache_ops, ops) {
   ops.def(
       "cp_gather_and_upconvert_fp8_kv_cache(Tensor src_cache, Tensor! dst, "
       "Tensor block_table, Tensor workspace_starts, int batch_size, Tensor? "
-      "seq_starts) -> ()");
+      "seq_starts, Tensor? host_cache=None, Tensor? host_row_ids=None, Tensor? "
+      "device_row_ids=None) -> ()");
+
+  ops.def(
+      "cp_gather_and_upconvert_nvfp4_kv_cache(Tensor src_cache, Tensor! dst, "
+      "Tensor block_table, Tensor workspace_starts, int batch_size) -> ()");
 
   ops.def(
       "indexer_k_quant_and_cache(Tensor k, Tensor! kv_cache, Tensor "
@@ -982,17 +1170,81 @@ STABLE_TORCH_LIBRARY_FRAGMENT(_C_cache_ops, ops) {
       "dst_scale, Tensor block_table, Tensor cu_seq_lens) -> ()");
 }
 
+// NOTE(metax): Native CUDA IPC all-reduce is replaced by MACA communicators.
+#ifndef USE_MACA
+STABLE_TORCH_LIBRARY_FRAGMENT(_C_custom_ar, custom_ar) {
+  custom_ar.def(
+      "init_custom_ar(int[] ipc_tensors, Tensor rank_data, "
+      "int rank, bool fully_connected) -> int");
+  custom_ar.def(
+      "all_reduce(int fa, Tensor inp, Tensor! out, int reg_buffer, "
+      "int reg_buffer_sz_bytes) -> ()");
+  custom_ar.def("dispose(int fa) -> ()");
+  custom_ar.def("meta_size() -> int");
+  custom_ar.def("register_buffer(int fa, int[] ipc_tensors) -> ()");
+  custom_ar.def("get_graph_buffer_ipc_meta(int fa) -> (int[], int[])");
+  custom_ar.def(
+      "register_graph_buffers(int fa, int[][] handles, int[][] offsets) -> ()");
+  custom_ar.def("allocate_shared_buffer_and_handle(int size) -> (int, Tensor)");
+  custom_ar.def("open_mem_handle(Tensor mem_handle) -> int");
+  custom_ar.def("free_shared_buffer(int ptr) -> ()");
+}
+
+STABLE_TORCH_LIBRARY_IMPL(_C_custom_ar, CUDA, custom_ar) {
+  custom_ar.impl("init_custom_ar", TORCH_BOX(&init_custom_ar));
+  custom_ar.impl("all_reduce", TORCH_BOX(&all_reduce));
+}
+
+STABLE_TORCH_LIBRARY_IMPL(_C_custom_ar, CPU, custom_ar) {
+  custom_ar.impl("open_mem_handle", TORCH_BOX(&open_mem_handle));
+}
+
+STABLE_TORCH_LIBRARY_IMPL(_C_custom_ar, CompositeExplicitAutograd, custom_ar) {
+  custom_ar.impl("dispose", TORCH_BOX(&dispose));
+  custom_ar.impl("meta_size", TORCH_BOX(&meta_size));
+  custom_ar.impl("register_buffer", TORCH_BOX(&register_buffer));
+  custom_ar.impl("get_graph_buffer_ipc_meta",
+                 TORCH_BOX(&get_graph_buffer_ipc_meta));
+  custom_ar.impl("register_graph_buffers", TORCH_BOX(&register_graph_buffers));
+  custom_ar.impl("allocate_shared_buffer_and_handle",
+                 TORCH_BOX(&allocate_shared_buffer_and_handle));
+  custom_ar.impl("free_shared_buffer", TORCH_BOX(&free_shared_buffer));
+}
+
+#endif
+
 STABLE_TORCH_LIBRARY_IMPL(_C_cache_ops, CPU, ops) {
   ops.impl("swap_blocks_batch", TORCH_BOX(&swap_blocks_batch));
 }
 
 STABLE_TORCH_LIBRARY_IMPL(_C_cache_ops, CUDA, ops) {
+  // NOTE(metax): Native MetaX caller compatibility.
+  ops.impl("cp_gather_indexer_k_cache", TORCH_BOX(&cp_gather_indexer_k_cache));
+  // NOTE(metax): Native MetaX caller compatibility.
+  ops.impl("indexer_k_cache", TORCH_BOX(&indexer_k_cache));
   ops.impl("swap_blocks", TORCH_BOX(&swap_blocks));
   ops.impl("reshape_and_cache", TORCH_BOX(&reshape_and_cache));
   ops.impl("reshape_and_cache_flash", TORCH_BOX(&reshape_and_cache_flash));
   ops.impl("concat_and_cache_mla", TORCH_BOX(&concat_and_cache_mla));
   ops.impl("concat_and_cache_mla_grouped",
            TORCH_BOX(&concat_and_cache_mla_grouped));
+
+#ifndef USE_ROCM
+  #ifndef USE_MACA
+  ops.impl("hisparse_resolve_residency",
+           TORCH_BOX(&hisparse_resolve_residency));
+  #endif
+  #ifndef USE_MACA
+  ops.impl("hisparse_invalidate_written_slots",
+           TORCH_BOX(&hisparse_invalidate_written_slots));
+  #endif
+  #ifndef USE_MACA
+  ops.impl("hisparse_gather_plan", TORCH_BOX(&hisparse_gather_plan));
+  #endif
+  #ifndef USE_MACA
+  ops.impl("hisparse_gather_compact", TORCH_BOX(&hisparse_gather_compact));
+  #endif
+#endif  // !USE_ROCM
   ops.impl("concat_and_cache_mla_rope_fused",
            TORCH_BOX(&concat_and_cache_mla_rope_fused));
   ops.impl("convert_fp8", TORCH_BOX(&convert_fp8));
@@ -1001,6 +1253,8 @@ STABLE_TORCH_LIBRARY_IMPL(_C_cache_ops, CUDA, ops) {
   ops.impl("cp_gather_cache", TORCH_BOX(&cp_gather_cache));
   ops.impl("cp_gather_and_upconvert_fp8_kv_cache",
            TORCH_BOX(&cp_gather_and_upconvert_fp8_kv_cache));
+  ops.impl("cp_gather_and_upconvert_nvfp4_kv_cache",
+           TORCH_BOX(&cp_gather_and_upconvert_nvfp4_kv_cache));
   ops.impl("indexer_k_quant_and_cache", TORCH_BOX(&indexer_k_quant_and_cache));
   ops.impl("concat_mla_q", TORCH_BOX(&concat_mla_q));
   ops.impl("cp_gather_indexer_k_quant_cache",

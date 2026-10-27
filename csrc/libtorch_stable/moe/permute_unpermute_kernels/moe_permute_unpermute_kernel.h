@@ -8,9 +8,18 @@
 #include <cub/device/device_radix_sort.cuh>
 #include <cub/util_type.cuh>
 
-#include "mctlass/array.h"
-// #include "mctlass/numeric_size.h"
-#include "libtorch_stable/moe/permute_unpermute_kernels/dispatch.h"
+#ifdef USE_MACA
+  // NOTE(metax): MATLASS supplies the array/bit-size layout on MACA; its array
+  // header includes numeric_types.h (there is no numeric_size.h in this SDK).
+  #include "mctlass/array.h"
+  // NOTE(metax): Array arithmetic operators live in this separate SDK header.
+  #include "mctlass/functional.h"
+namespace cutlass = mctlass;
+#else
+  #include "cutlass/array.h"
+  #include "cutlass/numeric_size.h"
+#endif
+#include "moe/permute_unpermute_kernels/dispatch.h"
 
 template <typename T>
 inline T* get_ptr(torch::stable::Tensor& t) {
@@ -43,18 +52,19 @@ class CubKeyValueSorter {
   int num_bits_;
 };
 
-void computeExpertFirstTokenOffset(int const* sorted_indices,
-                                   int const total_indices,
-                                   int const num_experts,
-                                   int64_t* expert_first_token_offset,
-                                   cudaStream_t stream);
+void computeExpertOffsetsAndInverse(int const* sorted_indices,
+                                    int const total_indices,
+                                    int const num_experts,
+                                    int64_t* expert_first_token_offset,
+                                    int const* sorted_rows, int* inverse,
+                                    cudaStream_t stream);
 
 void sortAndScanExpert(const int* expert_for_source_row, const int* source_rows,
                        int* permuted_experts, int* permuted_rows,
                        int64_t* expert_first_token_offset, int num_rows,
                        int num_experts, int num_experts_per_node, int k,
                        CubKeyValueSorter& sorter, void* sorter_ws,
-                       cudaStream_t stream);
+                       cudaStream_t stream, int* inverse = nullptr);
 
 template <typename T>
 void expandInputRowsKernelLauncher(

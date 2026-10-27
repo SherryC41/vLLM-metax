@@ -8,7 +8,7 @@
 
 #include <cuda_fp16.h>
 #include <cuda_bf16.h>
-#include "libtorch_stable/torch_utils.h"
+#include "torch_utils.h"
 #include "moe_wna16_utils.h"
 
 #define DIVIDE(x, size) (((x) + (size) - 1) / (size))
@@ -193,6 +193,8 @@ __global__ void moe_wna16_gemm_kernel(
       dequant<scalar_t2, bit>(expert_qweight_tmp[tmp_k % 4], weight_half2);
 
       for (int m = 0; m < num_valid_tokens; m++) {
+        // NOTE(metax): The MACA vector type needs an explicit value
+        // initializer.
         res2 = scalar_t2{};
 
 #pragma unroll

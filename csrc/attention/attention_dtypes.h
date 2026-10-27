@@ -1,7 +1,5 @@
 #pragma once
 
-#include "attention_generic.cuh"
-#include "dtype_float16.cuh"
-#include "dtype_float32.cuh"
-#include "dtype_bfloat16.cuh"
-#include "dtype_fp8.cuh"
+// NOTE(metax): Keep legacy MACA includes bound to the consolidated target
+// types.
+#include "core/vec_dtypes/vec_dtypes.h"

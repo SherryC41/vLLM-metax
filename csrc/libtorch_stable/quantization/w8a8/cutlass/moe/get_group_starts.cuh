@@ -3,7 +3,7 @@
 #include <cuda.h>
 #include <torch/csrc/stable/tensor.h>
 #include <torch/headeronly/core/ScalarType.h>
-#include "libtorch_stable/torch_utils.h"
+#include "torch_utils.h"
 
 #include "cutlass/bfloat16.h"
 #include "cutlass/float8.h"

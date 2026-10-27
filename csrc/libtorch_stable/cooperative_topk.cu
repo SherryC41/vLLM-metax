@@ -4,19 +4,22 @@
 #include <cuda_runtime.h>
 
 #include "torch_utils.h"
+#include "ops.h"
 
-#ifndef USE_ROCM
+#if !defined(USE_ROCM) && !defined(USE_MACA)
   #include "cooperative_topk.cuh"
 namespace ct = vllm::cooperative;
 namespace hist4096 = vllm::topk_histogram_4096;
 #endif
 
-#ifndef USE_ROCM
+#if !defined(USE_ROCM) && !defined(USE_MACA)
 template <uint32_t TopK, uint32_t CS>
 void launch_cooperative_cluster(ct::CooperativeTopKParams<TopK>& params,
                                 size_t smem, cudaStream_t stream) {
   auto kernel = []() {
-    if constexpr (CS == 16) {
+    if constexpr (CS == 2) {
+      return &ct::cooperative_topk_cs2<TopK>;
+    } else if constexpr (CS == 16) {
       return &ct::cooperative_topk_cs16<TopK>;
     } else if constexpr (CS == 8) {
       return &ct::cooperative_topk_cs8<TopK>;
@@ -32,7 +35,6 @@ void launch_cooperative_cluster(ct::CooperativeTopKParams<TopK>& params,
   cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
                        smem);
 
-  #ifndef USE_MACA
   cudaLaunchConfig_t cfg = {};
   cfg.gridDim = dim3(params.num_rows, CS);
   cfg.blockDim = dim3(hist4096::kBlockSize);
@@ -44,14 +46,6 @@ void launch_cooperative_cluster(ct::CooperativeTopKParams<TopK>& params,
   cfg.numAttrs = 1;
   cfg.attrs = attrs;
   cudaError_t err = cudaLaunchKernelEx(&cfg, kernel, params);
-  #else
-  // avoid ">>>" being formatted to "> > >"
-  // clang-format off
-  kernel<<<dim3(params.num_rows, CS), dim3(hist4096::kBlockSize), smem,
-           stream>>>(params);
-  cudaError_t err = cudaGetLastError();
-  // clang-format on
-  #endif
   STD_TORCH_CHECK(err == cudaSuccess,
                   "cooperative_topk launch failed: ", cudaGetErrorString(err));
 }
@@ -67,11 +61,9 @@ void launch_cooperative_topk_impl(const torch::stable::Tensor& logits,
   const cudaStream_t stream = get_current_cuda_stream();
 
   const uint32_t stride = static_cast<uint32_t>(logits.stride(0));
-  // 32 = max clusters for CS=4 (32 x 4 = 128 CTAs = 66% of SMs, leaves
-  // headroom)
   STD_TORCH_CHECK(
-      num_rows <= 32,
-      "cooperative_topk supports <=32 rows; use persistent_topk for "
+      num_rows <= 64,
+      "cooperative_topk supports <=64 rows; use persistent_topk for "
       "larger batches");
 
   STD_TORCH_CHECK(stride % 4 == 0,
@@ -105,8 +97,10 @@ void launch_cooperative_topk_impl(const torch::stable::Tensor& logits,
     launch_cooperative_cluster<TopK, 16>(params, ct::kSmemSize8, stream);
   } else if (num_rows <= 8) {
     launch_cooperative_cluster<TopK, 8>(params, ct::kSmemSize8, stream);
-  } else {
+  } else if (num_rows <= 33) {
     launch_cooperative_cluster<TopK, 4>(params, ct::kSmemSize4, stream);
+  } else {
+    launch_cooperative_cluster<TopK, 2>(params, ct::kSmemSize2, stream);
   }
 }
 #endif  // USE_ROCM
@@ -116,7 +110,25 @@ void cooperative_topk(const torch::stable::Tensor& logits,
                       torch::stable::Tensor& output,
                       torch::stable::Tensor& workspace, int64_t k,
                       int64_t max_seq_len) {
-#ifndef USE_ROCM
+#if defined(USE_MACA)
+  // NOTE(metax): MACA has no NVIDIA TMA/cluster barriers. Use the existing
+  // native per-row selector; this preserves results without claiming cluster
+  // performance.
+  STD_TORCH_CHECK(logits.dim() == 2 && lengths.numel() == logits.size(0));
+  STD_TORCH_CHECK(output.dim() == 2 && output.size(0) == logits.size(0) &&
+                  output.size(1) == k);
+  STD_TORCH_CHECK(logits.scalar_type() ==
+                      torch::headeronly::ScalarType::Float &&
+                  lengths.scalar_type() == torch::headeronly::ScalarType::Int &&
+                  output.scalar_type() == torch::headeronly::ScalarType::Int);
+  STD_TORCH_CHECK(logits.is_cuda() && lengths.is_cuda() && output.is_cuda());
+  STD_TORCH_CHECK(lengths.is_contiguous() && output.is_contiguous());
+  STD_TORCH_CHECK(k == 512 || k == 1024 || k == 2048);
+  (void)workspace;
+  (void)max_seq_len;
+  top_k_per_row_decode(logits, 1, lengths, output, logits.size(0),
+                       logits.stride(0), logits.stride(1), k);
+#elif !defined(USE_ROCM)
   STD_TORCH_CHECK(logits.is_cuda(), "logits must be CUDA tensor");
   STD_TORCH_CHECK(lengths.is_cuda(), "lengths must be CUDA tensor");
   STD_TORCH_CHECK(output.is_cuda(), "output must be CUDA tensor");

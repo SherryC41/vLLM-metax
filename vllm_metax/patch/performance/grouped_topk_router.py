@@ -4,8 +4,9 @@
 #
 # -----------------------------------------------------------------------------
 # Note: Add MetaX-specific grouped-topk routing fast paths and backend dispatch.
+#     SGL requires precompiled kernels; source builds use native grouped-topk.
 #
-# Affected versions: vLLM 0.32.0 (5df63a7203cd), reviewed 2026-10-21.
+# Affected versions: vLLM 0.32.0 (5df63a7203cd), reviewed 2026-10-27.
 #
 # Remove at: Upstream routing dispatch supports the MetaX fused grouped-topk kernels
 #     through a native extension point.
@@ -65,7 +66,9 @@ def maca_fused_grouped_topk(
             topk == 9 and num_expert_group == 1 and topk_group == 1
         )
         if (
-            mx_envs.VLLM_METAX_USE_SGL_FUSED_MOE_GROUPED_TOPK
+            # NOTE(metax): Source mode does not load MCOPLIB's SGL operators.
+            mx_envs.USE_PRECOMPILED_KERNEL
+            and mx_envs.VLLM_METAX_USE_SGL_FUSED_MOE_GROUPED_TOPK
             and (gating_output.shape[1] // num_expert_group <= 384)
             and (kimi or deepseek)
         ):

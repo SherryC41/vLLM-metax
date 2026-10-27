@@ -23,10 +23,12 @@
 #include <cooperative_groups.h>
 #include <cooperative_groups/reduce.h>
 #include <cub/cub.cuh>
+// NOTE(metax): The MACA compiler does not implicitly declare CUDA half types.
+#include <cuda_fp16.h>
+#include <cuda_bf16.h>
 
 #include <cstdint>
 #include <type_traits>
-#include <maca_bfloat16.h>
 
 namespace vllm {
 namespace moe {
@@ -39,7 +41,7 @@ struct TopKRedType {
   using T = T_;
   static_assert(
       std::is_same_v<T, float> || std::is_same_v<T, half> ||
-          std::is_same_v<T, __maca_bfloat16> || std::is_same_v<T, int>,
+          std::is_same_v<T, __nv_bfloat16> || std::is_same_v<T, int>,
       "Top K reduction only implemented for int, float, float16 and bfloat16");
 
   using TypeCmp = std::conditional_t<sizeof(T) == 4, uint64_t, uint32_t>;
@@ -79,7 +81,8 @@ struct TopKRedType {
 
   __device__ inline TypeCmp reduce(
       cg::thread_block_tile<kWARP_SIZE> const& warp) {
-#ifdef __CUDA_ARCH__
+// NOTE(metax): Use cooperative-groups reduction instead of NVIDIA redux PTX.
+#if defined(__CUDA_ARCH__) && !defined(USE_MACA)
     static constexpr bool kHAS_FAST_REDUX = (__CUDA_ARCH__ / 100) >= 10;
 #else
     static constexpr bool kHAS_FAST_REDUX = false;
@@ -255,7 +258,10 @@ __forceinline__ __device__ void reduceTopK(
   using RedType = TopKRedType<Type>;
   RedType topK{value, idx};
   typename RedType::TypeCmp packedMax{};
-  // #pragma unroll
+// NOTE(metax): Retain the MACA runtime-loop policy for variable actualK.
+#ifndef USE_MACA
+  #pragma unroll
+#endif
   for (int kk = 0; kk < actualK; ++kk) {
     topK = kk > 0 && packedMax == topK.compVal ? RedType{minValue, idx} : topK;
     packedMax = topK.reduce(warp);

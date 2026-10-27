@@ -293,40 +293,93 @@ function(cuda_archs_loose_intersection OUT_CUDA_ARCHS SRC_CUDA_ARCHS TGT_CUDA_AR
   set(_SRC_CUDA_ARCHS "${SRC_CUDA_ARCHS}")
   set(_TGT_CUDA_ARCHS ${TGT_CUDA_ARCHS})
 
-  # if x.0a is in SRC_CUDA_ARCHS and x.0 is in CUDA_ARCHS then we should
-  # remove x.0a from SRC_CUDA_ARCHS and add x.0a to _CUDA_ARCHS
+  # handle +PTX suffix: separate base arch for matching, record PTX requests
+  set(_PTX_ARCHS)
+  foreach(_arch ${_SRC_CUDA_ARCHS})
+    if(_arch MATCHES "\\+PTX$")
+      string(REPLACE "+PTX" "" _base "${_arch}")
+      list(APPEND _PTX_ARCHS "${_base}")
+      list(REMOVE_ITEM _SRC_CUDA_ARCHS "${_arch}")
+      list(APPEND _SRC_CUDA_ARCHS "${_base}")
+    endif()
+  endforeach()
+  list(REMOVE_DUPLICATES _PTX_ARCHS)
+  list(REMOVE_DUPLICATES _SRC_CUDA_ARCHS)
+
+  # Handle architecture-specific suffixes (a/f) for SRC entries.
+  # First try exact base match (x.y), then cross-suffix match (x.ya / x.yf).
+  # For 'f' (family) suffix: if no exact/cross match, fall back to major-version
+  # match — e.g. SRC="12.0f" matches TGT="12.1a" since SM121 is in the SM12x
+  # family. The output uses TGT's value to preserve the user's compilation flags.
   set(_CUDA_ARCHS)
-  if ("9.0a" IN_LIST SRC_CUDA_ARCHS)
-    list(REMOVE_ITEM SRC_CUDA_ARCHS "9.0a")
-    if ("9.0" IN_LIST TGT_CUDA_ARCHS_)
-      list(REMOVE_ITEM TGT_CUDA_ARCHS_ "9.0")
-      set(_CUDA_ARCHS "9.0a")
+  # Resolve exact base matches before family fallbacks so a generic entry such
+  # as 10.0f cannot consume a 10.7 target that has a 10.7f source entry.
+  foreach(_arch ${_SRC_CUDA_ARCHS})
+    if(_arch MATCHES "[af]$")
+      string(REGEX REPLACE "[af]$" "" _base "${_arch}")
+      if("${_base}" IN_LIST _TGT_CUDA_ARCHS)
+        list(REMOVE_ITEM _SRC_CUDA_ARCHS "${_arch}")
+        list(REMOVE_ITEM _TGT_CUDA_ARCHS "${_base}")
+        list(APPEND _CUDA_ARCHS "${_arch}")
+      endif()
     endif()
-  endif()
+  endforeach()
 
-  if ("10.0a" IN_LIST SRC_CUDA_ARCHS)
-    list(REMOVE_ITEM SRC_CUDA_ARCHS "10.0a")
-    if ("10.0" IN_LIST TGT_CUDA_ARCHS)
-      list(REMOVE_ITEM TGT_CUDA_ARCHS_ "10.0")
-      set(_CUDA_ARCHS "10.0a")
+  foreach(_arch ${_SRC_CUDA_ARCHS})
+    if(_arch MATCHES "[af]$")
+      list(REMOVE_ITEM _SRC_CUDA_ARCHS "${_arch}")
+      string(REGEX REPLACE "[af]$" "" _base "${_arch}")
+      if("${_base}a" IN_LIST _TGT_CUDA_ARCHS)
+        list(REMOVE_ITEM _TGT_CUDA_ARCHS "${_base}a")
+        list(APPEND _CUDA_ARCHS "${_base}a")
+      elseif("${_base}f" IN_LIST _TGT_CUDA_ARCHS)
+        list(REMOVE_ITEM _TGT_CUDA_ARCHS "${_base}f")
+        list(APPEND _CUDA_ARCHS "${_base}f")
+      elseif(_arch MATCHES "f$")
+        # Family suffix: match any TGT entry in the same major version family.
+        string(REGEX REPLACE "^([0-9]+)\\..*$" "\\1" _src_major "${_base}")
+        foreach(_tgt ${_TGT_CUDA_ARCHS})
+          string(REGEX REPLACE "[af]$" "" _tgt_base "${_tgt}")
+          string(REGEX REPLACE "^([0-9]+)\\..*$" "\\1" _tgt_major "${_tgt_base}")
+          if(_tgt_major STREQUAL _src_major)
+            list(REMOVE_ITEM _TGT_CUDA_ARCHS "${_tgt}")
+            list(APPEND _CUDA_ARCHS "${_tgt}")
+            break()
+          endif()
+        endforeach()
+      endif()
     endif()
-  endif()
+  endforeach()
 
-  list(SORT SRC_CUDA_ARCHS COMPARE NATURAL ORDER ASCENDING)
+  # Symmetric handling: if TGT has x.ya/f and SRC has x.y (without suffix),
+  # preserve TGT's suffix in the output.
+  set(_tgt_copy ${_TGT_CUDA_ARCHS})
+  foreach(_arch ${_tgt_copy})
+    if(_arch MATCHES "[af]$")
+      string(REGEX REPLACE "[af]$" "" _base "${_arch}")
+      if ("${_base}" IN_LIST _SRC_CUDA_ARCHS)
+        list(REMOVE_ITEM _TGT_CUDA_ARCHS "${_arch}")
+        list(REMOVE_ITEM _SRC_CUDA_ARCHS "${_base}")
+        list(APPEND _CUDA_ARCHS "${_arch}")
+      endif()
+    endif()
+  endforeach()
+
+  list(SORT _SRC_CUDA_ARCHS COMPARE NATURAL ORDER ASCENDING)
 
   # for each ARCH in TGT_CUDA_ARCHS find the highest arch in SRC_CUDA_ARCHS that
   # is less or equal to ARCH (but has the same major version since SASS binary
   # compatibility is only forward compatible within the same major version).
-  foreach(_ARCH ${TGT_CUDA_ARCHS_})
+  foreach(_ARCH ${_TGT_CUDA_ARCHS})
     set(_TMP_ARCH)
     # Extract the major version of the target arch
     string(REGEX REPLACE "^([0-9]+)\\..*$" "\\1" TGT_ARCH_MAJOR "${_ARCH}")
-    foreach(_SRC_ARCH ${SRC_CUDA_ARCHS})
+    foreach(_SRC_ARCH ${_SRC_CUDA_ARCHS})
       # Extract the major version of the source arch
       string(REGEX REPLACE "^([0-9]+)\\..*$" "\\1" SRC_ARCH_MAJOR "${_SRC_ARCH}")
-      # Check major-version match AND version-less-or-equal
+      # Check version-less-or-equal, and allow PTX arches to match across majors
       if (_SRC_ARCH VERSION_LESS_EQUAL _ARCH)
-        if (SRC_ARCH_MAJOR STREQUAL TGT_ARCH_MAJOR)
+        if (_SRC_ARCH IN_LIST _PTX_ARCHS OR SRC_ARCH_MAJOR STREQUAL TGT_ARCH_MAJOR)
           set(_TMP_ARCH "${_SRC_ARCH}")
         endif()
       else()
@@ -342,6 +395,18 @@ function(cuda_archs_loose_intersection OUT_CUDA_ARCHS SRC_CUDA_ARCHS TGT_CUDA_AR
   endforeach()
 
   list(REMOVE_DUPLICATES _CUDA_ARCHS)
+
+  # reapply +PTX suffix to architectures that requested PTX
+  set(_FINAL_ARCHS)
+  foreach(_arch ${_CUDA_ARCHS})
+    if(_arch IN_LIST _PTX_ARCHS)
+      list(APPEND _FINAL_ARCHS "${_arch}+PTX")
+    else()
+      list(APPEND _FINAL_ARCHS "${_arch}")
+    endif()
+  endforeach()
+  set(_CUDA_ARCHS ${_FINAL_ARCHS})
+
   set(${OUT_CUDA_ARCHS} ${_CUDA_ARCHS} PARENT_SCOPE)
 endfunction()
 
@@ -469,9 +534,10 @@ function (define_gpu_extension_target GPU_MOD_NAME)
   target_compile_definitions(${GPU_MOD_NAME} PRIVATE
     "-DTORCH_EXTENSION_NAME=${GPU_MOD_NAME}")
 
+  # NOTE(metax): Nested stable kernels must not resolve legacy csrc headers.
   target_include_directories(${GPU_MOD_NAME} PRIVATE
-    csrc
     csrc/libtorch_stable
+    csrc
     ${GPU_INCLUDE_DIRECTORIES})
 
   target_link_libraries(${GPU_MOD_NAME} PRIVATE torch ${GPU_LIBRARIES})

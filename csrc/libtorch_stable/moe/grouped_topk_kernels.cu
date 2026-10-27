@@ -22,7 +22,7 @@
 #include <torch/csrc/stable/tensor.h>
 #include <torch/headeronly/core/ScalarType.h>
 
-#include "libtorch_stable/torch_utils.h"
+#include "torch_utils.h"
 
 #include <cmath>
 #include <cstdint>
@@ -36,6 +36,8 @@ namespace cg = cooperative_groups;
 
 namespace vllm {
 namespace moe {
+// NOTE(metax): FP32 intermediates disambiguate half/BF16 bias conversions;
+// the bias still rounds to the input type before accumulation, as upstream.
 
 constexpr unsigned FULL_WARP_MASK = 0xffffffff;
 static constexpr int WARP_SIZE = 32;
@@ -66,18 +68,20 @@ constexpr __host__ __device__ bool isPowerOf2(T v) {
   return (v && !(v & (v - 1)));
 }
 
+// NOTE(metax): Compare half/BF16 values in float; MACA lacks some native
+// comparison operators, while conversion preserves every supported value.
 template <bool greater, typename T>
 __forceinline__ __device__ bool is_better_than(T val, T baseline) {
-  float f_val = static_cast<float>(val);
-  float f_baseline = static_cast<float>(baseline);
+  float const f_val = static_cast<float>(val);
+  float const f_baseline = static_cast<float>(baseline);
   return (f_val > f_baseline && greater) || (f_val < f_baseline && !greater);
 }
 
 template <bool greater, typename T, typename idxT>
 __forceinline__ __device__ bool is_better_than(T val, T baseline, idxT index,
                                                idxT baseline_index) {
-  float f_val = static_cast<float>(val);
-  float f_baseline = static_cast<float>(baseline);
+  float const f_val = static_cast<float>(val);
+  float const f_baseline = static_cast<float>(baseline);
   bool res =
       (f_val > f_baseline && greater) || (f_val < f_baseline && !greater);
   if (f_val == f_baseline) {
@@ -161,9 +165,8 @@ struct BitonicSort<32, ascending, T, idxT, is_stable> {
         idxT other_idx = __shfl_xor_sync(FULL_WARP_MASK, *idx_arr, stride);
 
         bool is_better;
-        float f_val = static_cast<float>(*val_arr);
-        float f_other = static_cast<float>(other);
-
+        float const f_val = static_cast<float>(*val_arr);
+        float const f_other = static_cast<float>(other);
         if constexpr (is_stable) {
           if constexpr (ascending) {
             is_better = ((f_val > f_other) ||
@@ -204,9 +207,8 @@ struct BitonicMerge<32, ascending, reverse, T, idxT, is_stable> {
       idxT other_idx = __shfl_xor_sync(FULL_WARP_MASK, idx, stride);
 
       bool is_better;
-      float f_val = static_cast<float>(*val_arr);
-      float f_other = static_cast<float>(other);
-
+      float const f_val = static_cast<float>(*val_arr);
+      float const f_other = static_cast<float>(other);
       if constexpr (is_stable) {
         if constexpr (ascending) {
           is_better = ((f_val > f_other) ||
@@ -218,8 +220,6 @@ struct BitonicMerge<32, ascending, reverse, T, idxT, is_stable> {
                       (reverse != is_second);  // for max
         }
       } else {
-        // 注意：原代码的 val 其实就是 *val_arr 的引用，所以用 f_val
-        // 替代是安全的
         is_better = (f_val != f_other &&
                      ((f_val > f_other) == (ascending != is_second)));
       }
@@ -242,50 +242,6 @@ class WarpSort {
     for (int i = 0; i < max_arr_len_; ++i) {
       val_arr_[i] = dummy_;
       idx_arr_[i] = 0;
-    }
-  }
-
-  // load and merge k sorted values
-  __device__ void load_sorted(T const* __restrict__ in,
-                              idxT const* __restrict__ in_idx, idxT start) {
-    idxT idx = start + WARP_SIZE - 1 - lane_;
-    for (int i = max_arr_len_ - 1; i >= 0; --i, idx += WARP_SIZE) {
-      if (idx < start + k_) {
-        T t = in[idx];
-        bool is_better;
-        if constexpr (is_stable) {
-          is_better =
-              is_better_than<greater>(t, val_arr_[i], in_idx[idx], idx_arr_[i]);
-        } else {
-          is_better = is_better_than<greater>(t, val_arr_[i]);
-        }
-        if (is_better) {
-          val_arr_[i] = t;
-          idx_arr_[i] = in_idx[idx];
-        }
-      }
-    }
-
-    BitonicMerge<capacity, greater, !greater, T, idxT, is_stable>::merge(
-        val_arr_, idx_arr_);
-  }
-
-  __device__ void dump(T* __restrict__ out, idxT* __restrict__ out_idx) const {
-    for (int i = 0; i < max_arr_len_; ++i) {
-      idxT out_i = i * WARP_SIZE + lane_;
-      if (out_i < k_) {
-        out[out_i] = val_arr_[i];
-        out_idx[out_i] = idx_arr_[i];
-      }
-    }
-  }
-
-  __device__ void dumpIdx(idxT* __restrict__ out_idx) const {
-    for (int i = 0; i < max_arr_len_; ++i) {
-      idxT out_i = i * WARP_SIZE + lane_;
-      if (out_i < k_) {
-        out_idx[out_i] = idx_arr_[i];
-      }
     }
   }
 
@@ -499,9 +455,9 @@ __device__ void topk_with_k2(T* output, T const* input, BiasT const* bias,
   if (num_experts_per_group > WARP_SIZE) {
     for (int i = lane_id; i < num_experts_per_group; i += WARP_SIZE) {
       T value = apply_scoring<SF>(input[i]);
-      value = static_cast<T>(static_cast<float>(value) +
-                             static_cast<float>(bias[i]));
-      // value = value + static_cast<T>(bias[i]);
+      value = static_cast<T>(
+          static_cast<float>(value) +
+          static_cast<float>(static_cast<T>(static_cast<float>(bias[i]))));
 
       if (static_cast<float>(value) > static_cast<float>(largest)) {
         second_largest = largest;
@@ -514,14 +470,14 @@ __device__ void topk_with_k2(T* output, T const* input, BiasT const* bias,
   } else {
     for (int i = lane_id; i < num_experts_per_group; i += WARP_SIZE) {
       T value = apply_scoring<SF>(input[i]);
-      value = static_cast<T>(static_cast<float>(value) +
-                             static_cast<float>(bias[i]));
+      value = static_cast<T>(
+          static_cast<float>(value) +
+          static_cast<float>(static_cast<T>(static_cast<float>(bias[i]))));
       largest = value;
     }
   }
-
-  // float max1_f = cg::reduce(tile, static_cast<float>(largest),
-  // cg::greater<float>());
+  // Get the top2 warpwise
+  // NOTE(metax): MACA cooperative-groups reductions support float here.
   T max1 = static_cast<T>(
       cg::reduce(tile, static_cast<float>(largest), cg::greater<float>()));
 
@@ -537,7 +493,6 @@ __device__ void topk_with_k2(T* output, T const* input, BiasT const* bias,
                   : largest;
     max2 = static_cast<T>(
         cg::reduce(tile, static_cast<float>(largest), cg::greater<float>()));
-    // max2 = static_cast<T>(max2_f);
   }
 
   if (lane_id == 0) {
@@ -592,7 +547,7 @@ __global__ void grouped_topk_fused_kernel(
   ptr_u = (ptr_u + 15) & ~static_cast<uintptr_t>(15);  // align to 16B
   T* s_group_scores = reinterpret_cast<T*>(ptr_u);
 
-#if (defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
+#if !defined(USE_MACA) && (defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
   cudaGridDependencySynchronize();  // I think all prolog can be put before
                                     // acqbulk because it's ptr arithmetic
 #endif
@@ -637,7 +592,7 @@ __global__ void grouped_topk_fused_kernel(
       topk_indices[i] = static_cast<IdxT>(i);
       topk_values[i] = 1.0f / static_cast<float>(topk_i32);
     }
-#if (defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
+#if !defined(USE_MACA) && (defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
     cudaTriggerProgrammaticLaunchCompletion();
 #endif
     return;
@@ -667,8 +622,8 @@ __global__ void grouped_topk_fused_kernel(
         if (is_finite(input)) {
           T score = apply_scoring<SF>(input);
           cand = static_cast<T>(static_cast<float>(score) +
-                                static_cast<float>(bias[idx]));
-          // cand = score + static_cast<T>(bias[idx]);
+                                static_cast<float>(static_cast<T>(
+                                    static_cast<float>(bias[idx]))));
         }
       }
       expert_sel.add(cand, idx);
@@ -700,7 +655,7 @@ __global__ void grouped_topk_fused_kernel(
     topk_values[lane_id] = lane_unbiased * scale;
   }
 
-#if (defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
+#if !defined(USE_MACA) && (defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
   cudaTriggerProgrammaticLaunchCompletion();
 #endif
 }
@@ -714,7 +669,7 @@ __global__ void grouped_topk_fused_small_expert_count_kernel(
     int64_t const topk, int64_t const numExperts,
     int64_t const numExpertsPerGroup, bool const renormalize,
     double const routedScalingFactor) {
-#if (defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
+#if !defined(USE_MACA) && (defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
   cudaGridDependencySynchronize();
 #endif
   // declare shared memory structure
@@ -915,7 +870,7 @@ __global__ void grouped_topk_fused_small_expert_count_kernel(
     }
   }
 
-#if (defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
+#if !defined(USE_MACA) && (defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
   cudaTriggerProgrammaticLaunchCompletion();
 #endif
 }
@@ -1018,7 +973,7 @@ __global__ void __launch_bounds__(BlockDim)
   static_assert(NumChunks <= 64);
   static_assert(MaxNumTopExperts <= WARP_SIZE);
 
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900)
+#if !defined(USE_MACA) && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900)
   if (enable_pdl) {
     cudaGridDependencySynchronize();
   }
@@ -1135,7 +1090,7 @@ __global__ void __launch_bounds__(BlockDim)
                   routed_scaling_factor);
   }
 
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900)
+#if !defined(USE_MACA) && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900)
   if (enable_pdl) {
     cudaTriggerProgrammaticLaunchCompletion();
   }
@@ -1181,7 +1136,7 @@ __global__ void __launch_bounds__(WarpTopKLaunchConfig<MaxNumExperts>::BlockDim)
   static_assert(NumChunks <= 64);
   static_assert(MaxNumTopExperts <= WARP_SIZE);
 
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900)
+#if !defined(USE_MACA) && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900)
   if (enable_pdl) {
     cudaGridDependencySynchronize();
   }
@@ -1241,7 +1196,7 @@ __global__ void __launch_bounds__(WarpTopKLaunchConfig<MaxNumExperts>::BlockDim)
                   routed_scaling_factor);
   }
 
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900)
+#if !defined(USE_MACA) && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900)
   if (enable_pdl) {
     cudaTriggerProgrammaticLaunchCompletion();
   }
@@ -1358,11 +1313,17 @@ void invokeNoAuxTc(T* scores, float* topk_values, IdxT* topk_indices,
                    cudaStream_t const stream = 0) {
   cudaLaunchConfig_t config;
   config.stream = stream;
-  // cudaLaunchAttribute attrs[1];
-  // attrs[0].id = cudaLaunchAttributeProgrammaticStreamSerialization;
-  // attrs[0].val.programmaticStreamSerializationAllowed = enable_pdl;
+#ifndef USE_MACA
+  cudaLaunchAttribute attrs[1];
+  attrs[0].id = cudaLaunchAttributeProgrammaticStreamSerialization;
+  attrs[0].val.programmaticStreamSerializationAllowed = enable_pdl;
+  config.numAttrs = 1;
+  config.attrs = attrs;
+#else
+  // NOTE(metax): MACA has no CUDA programmatic-launch serialization.
   config.numAttrs = 0;
   config.attrs = nullptr;
+#endif
   if (n_group == 1 && topk_group == 1 &&
       single_group_topk::invoke<T, BiasT, IdxT, SF>(
           scores, topk_values, topk_indices, bias, num_tokens, num_experts,
@@ -1417,12 +1378,19 @@ void invokeNoAuxTc(T* scores, float* topk_values, IdxT* topk_indices,
     config.gridDim = num_tokens;
     config.blockDim = num_threads;
     config.dynamicSmemBytes = 0;
-    // MACA 平台直接降级为标准启动语法，绕开不支持的属性
+#ifdef USE_MACA
+    // NOTE(metax): Use the native MACA launch for this templated entry.
     kernel_instance<<<config.gridDim, config.blockDim, config.dynamicSmemBytes,
                       config.stream>>>(scores, topk_values, topk_indices, bias,
                                        num_tokens, n_group, topk_group, topk,
                                        num_experts, num_experts / n_group,
                                        renormalize, routed_scaling_factor);
+#else
+    cudaLaunchKernelEx(&config, kernel_instance, scores, topk_values,
+                       topk_indices, bias, num_tokens, n_group, topk_group,
+                       topk, num_experts, num_experts / n_group, renormalize,
+                       routed_scaling_factor);
+#endif
   } else {
     auto* kernel_instance = &grouped_topk_fused_kernel<T, BiasT, IdxT, SF>;
     // One block per token; one warp per group.
@@ -1439,11 +1407,17 @@ void invokeNoAuxTc(T* scores, float* topk_values, IdxT* topk_indices,
     size_t const internal_bytes = val_bytes_aligned + idx_bytes;
     size_t const extra_bytes = 16 + static_cast<size_t>(n_group) * sizeof(T);
     config.dynamicSmemBytes = internal_bytes + extra_bytes;
-    // MACA 平台直接降级为标准启动语法，绕开不支持的属性
+#ifdef USE_MACA
+    // NOTE(metax): Use the native MACA launch for this templated entry.
     kernel_instance<<<config.gridDim, config.blockDim, config.dynamicSmemBytes,
                       config.stream>>>(
         scores, topk_values, topk_indices, bias, num_tokens, num_experts,
         n_group, topk_group, topk, renormalize, routed_scaling_factor);
+#else
+    cudaLaunchKernelEx(&config, kernel_instance, scores, topk_values,
+                       topk_indices, bias, num_tokens, num_experts, n_group,
+                       topk_group, topk, renormalize, routed_scaling_factor);
+#endif
   }
 }
 

@@ -109,7 +109,7 @@ __global__ __launch_bounds__(
   float acc[kMG][kEPB] = {};
   __shared__ float sm_reduction[kNumTokens][kEPB][kNumWarps];
 
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900)
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900) && !defined(USE_MACA)
   cudaGridDependencySynchronize();
   // Fire the PDL trigger right after our own wait instead of at kernel end:
   // a gridsync-ing consumer is unaffected (its wait always targets full grid
@@ -150,11 +150,11 @@ __global__ __launch_bounds__(
 #pragma unroll
     for (int e = 0; e < kEPB; e++) {
       float sum = acc[m][e];
-      sum += __shfl_xor_sync(0xffffffff, sum, 16);
-      sum += __shfl_xor_sync(0xffffffff, sum, 8);
-      sum += __shfl_xor_sync(0xffffffff, sum, 4);
-      sum += __shfl_xor_sync(0xffffffff, sum, 2);
-      sum += __shfl_xor_sync(0xffffffff, sum, 1);
+      sum += __shfl_xor_sync(0xffffffff, sum, 16, 32);
+      sum += __shfl_xor_sync(0xffffffff, sum, 8, 32);
+      sum += __shfl_xor_sync(0xffffffff, sum, 4, 32);
+      sum += __shfl_xor_sync(0xffffffff, sum, 2, 32);
+      sum += __shfl_xor_sync(0xffffffff, sum, 1, 32);
       if (laneId == 0) sm_reduction[m0 + m][e][warpId] = sum;
     }
   }
@@ -182,6 +182,9 @@ template <typename InputT, int kBlockSize, int kEPB, int kNumTokens,
 static void launchFp32RouterGemm(float* output, InputT const* mat_a,
                                  float const* mat_b, cudaStream_t stream) {
   static_assert(kNumExperts % kEPB == 0);
+  // NOTE(metax): Preserve the kernel while avoiding unsupported CUDA
+  // launch-ex/PDL.
+#ifndef USE_MACA
   cudaLaunchConfig_t config;
   config.gridDim = kNumExperts / kEPB;
   config.blockDim = kBlockSize * kTGroups;
@@ -194,9 +197,19 @@ static void launchFp32RouterGemm(float* output, InputT const* mat_a,
       fp32_router_gemm_kernel<InputT, kBlockSize, kNumTokens, kEPB, kNumExperts,
                               kHiddenDim, kTGroups>,
       output, mat_a, mat_b);
+#else
+  fp32_router_gemm_kernel<InputT, kBlockSize, kNumTokens, kEPB, kNumExperts,
+                          kHiddenDim, kTGroups>
+      <<<kNumExperts / kEPB, kBlockSize * kTGroups, 0, stream> > >(
+          output, mat_a, mat_b);
+#endif
 }
 
 static bool isBlackwellFamily() {
+#ifdef USE_MACA
+  // NOTE(metax): NVIDIA B300 geometry is not a MACA capability declaration.
+  return false;
+#else
   static int sm = []() {
     int dev = 0, major = 0, minor = 0;
     cudaGetDevice(&dev);
@@ -205,6 +218,7 @@ static bool isBlackwellFamily() {
     return major * 10 + minor;
   }();
   return sm >= 100;
+#endif
 }
 
 template <typename InputT, int kNumTokens, int kNumExperts, int kHiddenDim>

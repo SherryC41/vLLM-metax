@@ -34,10 +34,6 @@ class ScalarType<half> {
   static __host__ __device__ float2 inline num22float2(const half2 x) {
     return __half22float2(x);
   }
-
-  static __host__ __device__ half2 inline float22num2(const float2 x) {
-    return __float22half2_rn(x);
-  }
 };
 
 template <>
@@ -46,7 +42,8 @@ class ScalarType<nv_bfloat16> {
   using scalar_t = nv_bfloat16;
   using scalar_t2 = nv_bfloat162;
 
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+// NOTE(metax): MACA BF16 support does not depend on NVIDIA SM numbering.
+#if defined(USE_MACA) || (defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800)
   static __device__ float inline num2float(const nv_bfloat16 x) {
     return __bfloat162float(x);
   }
@@ -71,15 +68,14 @@ class ScalarType<nv_bfloat16> {
   static __host__ __device__ float2 inline num22float2(const nv_bfloat162 x) {
     return __bfloat1622float2(x);
   }
-
-  static __host__ __device__ nv_bfloat162 inline float22num2(const float2 x) {
-    return __float22bfloat162_rn(x);
-  }
 #endif
 };
 
 template <int lut>
 __device__ inline int lop3(int a, int b, int c) {
+#ifdef USE_MACA
+  // NOTE(metax): Evaluate the NVIDIA PTX primitive with portable bit
+  // operations.
   if constexpr (lut == ((0xf0 & 0xcc) | 0xaa)) {
     return (a & b) | c;
   }
@@ -89,7 +85,7 @@ __device__ inline int lop3(int a, int b, int c) {
   uint32_t uc = static_cast<uint32_t>(c);
   uint32_t res = 0;
 
-#pragma unroll
+  #pragma unroll
   for (int idx = 0; idx < 8; ++idx) {
     if ((lut & (1 << idx)) != 0) {
       uint32_t term = ((idx & 0x4) ? ua : ~ua) & ((idx & 0x2) ? ub : ~ub) &
@@ -98,14 +94,24 @@ __device__ inline int lop3(int a, int b, int c) {
     }
   }
   return static_cast<int>(res);
+#else
+  int res;
+  asm volatile("lop3.b32 %0, %1, %2, %3, %4;\n"
+               : "=r"(res)
+               : "r"(a), "r"(b), "r"(c), "n"(lut));
+  return res;
+#endif
 }
 
 template <int start_byte, int mask>
 __device__ inline uint32_t prmt(uint32_t a) {
+#ifdef USE_MACA
+  // NOTE(metax): Evaluate the NVIDIA PTX primitive with portable bit
+  // operations.
   uint32_t b = static_cast<uint32_t>(start_byte);
   uint32_t res = 0;
 
-#pragma unroll
+  #pragma unroll
   for (int out_byte = 0; out_byte < 4; ++out_byte) {
     uint32_t selector = (static_cast<uint32_t>(mask) >> (out_byte * 4)) & 0xf;
     uint32_t src = (selector & 0x4) ? b : a;
@@ -117,6 +123,13 @@ __device__ inline uint32_t prmt(uint32_t a) {
     res |= byte << (out_byte * 8);
   }
   return res;
+#else
+  uint32_t res;
+  asm volatile("prmt.b32 %0, %1, %2, %3;\n"
+               : "=r"(res)
+               : "r"(a), "n"(start_byte), "n"(mask));
+  return res;
+#endif
 }
 
 template <typename scalar_t2, int bit>
@@ -166,7 +179,8 @@ __device__ inline void dequant<half2, 8>(int q, half2* res) {
                    *reinterpret_cast<const half2*>(&I8s_TO_F16s_MAGIC_NUM));
 }
 
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+// NOTE(metax): MACA BF16 support does not depend on NVIDIA SM numbering.
+#if defined(USE_MACA) || (defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800)
 template <>
 __device__ inline void dequant<nv_bfloat162, 4>(int q, nv_bfloat162* res) {
   static constexpr uint32_t MASK = 0x000f000f;

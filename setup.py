@@ -192,6 +192,10 @@ class cmake_build_ext(build_ext):
 
         if not _build_custom_ops():
             cmake_args += ["-DUSE_PRECOMPILED_KERNEL=ON"]
+        else:
+            # NOTE(metax): Override a cached precompiled build when source ops
+            # are explicitly selected for the same build directory.
+            cmake_args += ["-DUSE_PRECOMPILED_KERNEL=OFF"]
         subprocess.check_call(
             [CMAKE_EXECUTABLE, ext.cmake_lists_dir, *build_tool, *cmake_args],
             cwd=self.build_temp,

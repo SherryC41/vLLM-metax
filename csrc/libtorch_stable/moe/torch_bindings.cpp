@@ -20,7 +20,8 @@ STABLE_TORCH_LIBRARY_FRAGMENT(_moe_C, m) {
       "topk_softplus_sqrt(Tensor! topk_weights, Tensor! topk_indices, Tensor! "
       "token_expert_indices, Tensor gating_output, bool renormalize, float "
       "routed_scaling_factor, Tensor? "
-      "bias, Tensor? input_ids, Tensor? tid2eid, Tensor? is_padding) -> ()");
+      "bias, Tensor? input_ids, Tensor? tid2eid, Tensor? is_padding, "
+      "Tensor? bias_vl=None, int image_sentinel_lo=0) -> ()");
 
   // Calculate the result of moe by summing up the partial results
   // from all selected experts. topk_ids/expert_map are optional and, when
@@ -38,7 +39,8 @@ STABLE_TORCH_LIBRARY_FRAGMENT(_moe_C, m) {
       "                     int block_size, Tensor! sorted_token_ids,"
       "                     Tensor! experts_ids,"
       "                     Tensor! num_tokens_post_pad,"
-      "                     Tensor? maybe_expert_map) -> ()");
+      "                     Tensor? maybe_expert_map,"
+      "                     Tensor(a!)? scatter_idx=None) -> ()");
 
   // Aligning the number of tokens to be processed by each expert such
   // that it is divisible by the block size, but for the batched case.
@@ -64,14 +66,32 @@ STABLE_TORCH_LIBRARY_FRAGMENT(_moe_C, m) {
       "                     Tensor !adapter_enabled,"
       "                     Tensor !lora_ids,"
       "                     Tensor? maybe_expert_map) -> () ");
+#ifndef USE_ROCM
+  m.def(
+      "moe_wna16_gemm(Tensor input, Tensor! output, Tensor b_qweight, "
+      "Tensor b_scales, Tensor? b_qzeros, "
+      "Tensor? topk_weights, Tensor sorted_token_ids, "
+      "Tensor expert_ids, Tensor num_tokens_post_pad, "
+      "int top_k, int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, "
+      "int bit) -> Tensor");
 
-  //   m.def(
-  //       "moe_wna16_gemm(Tensor input, Tensor! output, Tensor b_qweight, "
-  //       "Tensor b_scales, Tensor? b_qzeros, "
-  //       "Tensor? topk_weights, Tensor sorted_token_ids, "
-  //       "Tensor expert_ids, Tensor num_tokens_post_pad, "
-  //       "int top_k, int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, "
-  //       "int bit) -> Tensor");
+  #ifndef USE_MACA
+  // NOTE(metax): NVIDIA Marlin PTX kernels are not compiled for MACA.
+  m.def(
+      "moe_wna16_marlin_gemm(Tensor! a, Tensor? c_or_none,"
+      "Tensor! b_q_weight, Tensor? b_bias_or_none,"
+      "Tensor! b_scales, Tensor? a_scales, Tensor? global_scale, Tensor? "
+      "b_zeros_or_none,"
+      "Tensor! workspace,"
+      "Tensor sorted_token_ids,"
+      "Tensor! expert_ids, Tensor! num_tokens_past_padded,"
+      "Tensor! topk_weights, int moe_block_size, int top_k, "
+      "bool mul_topk_weights, int b_type_id,"
+      "int size_m, int size_n, int size_k, bool use_atomic_add,"
+      "bool use_fp32_reduce, bool is_zp_float,"
+      "int thread_k, int thread_n, int blocks_per_sm) -> Tensor");
+
+  #endif
 
   m.def(
       "moe_permute(Tensor input, Tensor topk_ids,"
@@ -91,6 +111,13 @@ STABLE_TORCH_LIBRARY_FRAGMENT(_moe_C, m) {
       "Tensor! sorted_row_idx, Tensor! topk_ids_for_sort)->()");
 
   m.def(
+      "moe_prepare_scatter(Tensor topk_ids, Tensor token_expert_indices, "
+      "Tensor? expert_map, int n_expert, int n_local_expert, "
+      "Tensor! expert_first_token_offset, Tensor! scatter_idx, "
+      "Tensor! sort_workspace, Tensor! sorted_experts, Tensor! sorted_rows, "
+      "Tensor! topk_ids_for_sort)->()");
+
+  m.def(
       "moe_unpermute(Tensor permuted_hidden_states, Tensor topk_weights,"
       "Tensor inv_permuted_idx, Tensor? expert_first_token_offset, "
       "int topk, Tensor! hidden_states)->()");
@@ -101,9 +128,9 @@ STABLE_TORCH_LIBRARY_FRAGMENT(_moe_C, m) {
       "int");
 
   // Row shuffle for MoE
-  //   m.def(
-  //       "shuffle_rows(Tensor input_tensor, Tensor dst2src_map, Tensor! "
-  //       "output_tensor) -> ()");
+  m.def(
+      "shuffle_rows(Tensor input_tensor, Tensor dst2src_map, Tensor! "
+      "output_tensor) -> ()");
 
   // Apply grouped topk routing to select experts.
   m.def(
@@ -111,10 +138,7 @@ STABLE_TORCH_LIBRARY_FRAGMENT(_moe_C, m) {
       "topk_group, int topk, bool renormalize, float "
       "routed_scaling_factor, Tensor bias, int scoring_func) -> (Tensor, "
       "Tensor)");
-
-  // DeepSeek V3 optimized router GEMM for SM90+
-  m.def("dsv3_router_gemm(Tensor! output, Tensor mat_a, Tensor mat_b) -> ()");
-  // conditionally compiled so impl registration is in source file
+#endif
 }
 
 STABLE_TORCH_LIBRARY_IMPL(_moe_C, CUDA, m) {
@@ -127,8 +151,8 @@ STABLE_TORCH_LIBRARY_IMPL(_moe_C, CUDA, m) {
          TORCH_BOX(&batched_moe_align_block_size));
   m.impl("moe_lora_align_block_size", TORCH_BOX(&moe_lora_align_block_size));
 #ifndef USE_ROCM
-  //   m.impl("moe_wna16_gemm", TORCH_BOX(&moe_wna16_gemm));
-  //   m.impl("shuffle_rows", TORCH_BOX(&shuffle_rows));
+  m.impl("moe_wna16_gemm", TORCH_BOX(&moe_wna16_gemm));
+  m.impl("shuffle_rows", TORCH_BOX(&shuffle_rows));
   m.impl("grouped_topk", TORCH_BOX(&grouped_topk));
 #endif
 }

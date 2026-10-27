@@ -10,6 +10,16 @@
 #include <array>
 #include <optional>
 
+// NOTE(metax): Preserve storage ownership with the exact-version bridge when
+// the selected stable API lacks from_blob's deleter overload.
+#if defined(USE_MACA) && TORCH_TARGET_VERSION < 0x020B000000000000ULL
+AtenTensorHandle metax_cuda_view_with_owner(AtenTensorHandle input);
+
+torch::stable::Tensor get_cuda_view_from_cpu_tensor(
+    torch::stable::Tensor& cpu_tensor) {
+  return torch::stable::Tensor(metax_cuda_view_with_owner(cpu_tensor.get()));
+}
+#else
 // This function assumes that `cpu_tensor` is a CPU tensor,
 // and that UVA (Unified Virtual Addressing) is enabled.
 torch::stable::Tensor get_cuda_view_from_cpu_tensor(
@@ -74,3 +84,5 @@ torch::stable::Tensor get_cuda_view_from_cpu_tensor(
                                   contiguous_cpu.strides(), cuda_dev,
                                   contiguous_cpu.scalar_type(), deleter);
 }
+
+#endif

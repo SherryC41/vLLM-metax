@@ -6,6 +6,7 @@ from typing import Any
 import torch
 
 import vllm.envs as envs
+import vllm_metax.envs as mx_envs
 
 from vllm.platforms import current_platform
 
@@ -120,7 +121,10 @@ class MacaAgRsAll2AllManager(AgRsAll2AllManager):
         # tensors; preserve their dtype/shape through the generic collective.
         # Keep packing only for the layout supported by the installed kernel.
         if (
-            topk_weights.dtype != torch.float32
+            # NOTE(metax): fused_unpack is MCOPLIB-only. The source build
+            # retains arbitrary tensor dtypes through the native collective.
+            not mx_envs.USE_PRECOMPILED_KERNEL
+            or topk_weights.dtype != torch.float32
             or topk_ids.dtype != torch.int32
             or (
                 extra_tensors is not None

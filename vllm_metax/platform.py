@@ -27,6 +27,12 @@ from vllm_metax.utils.msprobe_debug import resolve_worker_cls
 from vllm.platforms.interface import DeviceCapability, Platform, PlatformEnum
 from vllm.utils.argparse_utils import FlexibleArgumentParser
 
+# NOTE(metax): Native and MCOPLIB operators have different schemas; include the
+# selected mode in vLLM's compile factors so their cached graphs cannot collide.
+envs.environment_variables["USE_PRECOMPILED_KERNEL"] = mx_envs.environment_variables[
+    "USE_PRECOMPILED_KERNEL"
+]
+
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
     from vllm.config.cache import CacheDType
@@ -265,6 +271,13 @@ class MacaPlatformBase(Platform):
             else:
                 import vllm_metax._C_stable_libtorch  # noqa: F401
         except ImportError as e:
+            # NOTE(metax): An explicit source build must not continue with an
+            # absent or incompatible native extension.
+            if not mx_envs.USE_PRECOMPILED_KERNEL:
+                raise ImportError(
+                    "USE_PRECOMPILED_KERNEL=0 requires a working "
+                    "vllm_metax._C_stable_libtorch source build"
+                ) from e
             logger.warning(
                 "Failed to import  _C: %r with USE_PRECOMPILED_KERNEL=%s",
                 e,
@@ -277,6 +290,11 @@ class MacaPlatformBase(Platform):
             else:
                 import vllm_metax._moe_C_stable_libtorch  # noqa: F401
         except ImportError as e:
+            if not mx_envs.USE_PRECOMPILED_KERNEL:
+                raise ImportError(
+                    "USE_PRECOMPILED_KERNEL=0 requires a working "
+                    "vllm_metax._moe_C_stable_libtorch source build"
+                ) from e
             logger.warning(
                 "Failed to import _moe_C: %r with USE_PRECOMPILED_KERNEL=%s",
                 e,
