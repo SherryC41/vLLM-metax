@@ -1,0 +1,63 @@
+{
+  "environment": {
+    "python": "3.12.11 | packaged by conda-forge | (main, Jun  4 2025, 14:45:31) [GCC 13.3.0]",
+    "executable": "/opt/conda/bin/python",
+    "packages": {
+      "vllm": {
+        "distribution_version": "0.32.0+empty",
+        "origin": "/opt/conda/lib/python3.12/site-packages/vllm/__init__.py"
+      },
+      "vllm_metax": {
+        "distribution_version": "0.30.0+gf2fcc5.d20260929.maca3.8.2.6.torch2.10.0",
+        "origin": "/home/m01016/dummy_home/vllm_workspace/vllm-metax/vllm_metax/__init__.py"
+      },
+      "transformers": {
+        "distribution_version": "5.15.1",
+        "origin": "/opt/conda/lib/python3.12/site-packages/transformers/__init__.py"
+      },
+      "torch": {
+        "distribution_version": "2.10.0+metax3.8.2.2",
+        "origin": "/opt/conda/lib/python3.12/site-packages/torch/__init__.py"
+      }
+    }
+  },
+  "results": {
+    "structural_and_asset_checks": "PASS",
+    "normalized_config": {
+      "status": "BLOCKED",
+      "error": "ModuleNotFoundError: No module named 'vllm.models.qwen4_exp'"
+    },
+    "registration": "explicit MetaX config registration attempted; full plugin checked separately",
+    "tokenizer_class": "Qwen2Tokenizer",
+    "tokenizer_size": 248077,
+    "sample_token_ids": [
+      9419,
+      11,
+      1814,
+      0
+    ],
+    "chat_tokens": 53,
+    "processor_class": "Qwen3VLProcessor",
+    "image_grid_thw": [
+      [
+        1,
+        16,
+        16
+      ]
+    ],
+    "video_grid_thw": [
+      [
+        2,
+        16,
+        16
+      ]
+    ],
+    "generation_eos_token_id": [
+      248046,
+      248044
+    ],
+    "gpu_startup": "UNVERIFIED",
+    "generation": "UNVERIFIED",
+    "mtp": "UNVERIFIED"
+  }
+}

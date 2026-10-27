@@ -1,0 +1,134 @@
+{
+  "source": "/mxstorage/pde_ai/models/llm/Qwen/Qwen3.8-Flash-Next",
+  "mode": "dummy",
+  "text_layer_mapping_zero_based": {
+    "0": 0,
+    "1": 1,
+    "3": 2
+  },
+  "vision_layer_mapping_zero_based": {
+    "0": 0
+  },
+  "mtp_mapping": {
+    "checkpoint_namespace": "mtp.layers.0",
+    "old_runtime_layer": 48,
+    "new_runtime_layer": 3
+  },
+  "changes": {
+    "text_config.num_hidden_layers": [
+      48,
+      3
+    ],
+    "text_config.layer_types": [
+      [
+        "linear_attention",
+        "linear_attention",
+        "linear_attention",
+        "full_attention",
+        "linear_attention",
+        "linear_attention",
+        "linear_attention",
+        "full_attention",
+        "linear_attention",
+        "linear_attention",
+        "linear_attention",
+        "full_attention",
+        "linear_attention",
+        "linear_attention",
+        "linear_attention",
+        "full_attention",
+        "linear_attention",
+        "linear_attention",
+        "linear_attention",
+        "full_attention",
+        "linear_attention",
+        "linear_attention",
+        "linear_attention",
+        "full_attention",
+        "linear_attention",
+        "linear_attention",
+        "linear_attention",
+        "full_attention",
+        "linear_attention",
+        "linear_attention",
+        "linear_attention",
+        "full_attention",
+        "linear_attention",
+        "linear_attention",
+        "linear_attention",
+        "full_attention",
+        "linear_attention",
+        "linear_attention",
+        "linear_attention",
+        "full_attention",
+        "linear_attention",
+        "linear_attention",
+        "linear_attention",
+        "full_attention",
+        "linear_attention",
+        "linear_attention",
+        "linear_attention",
+        "full_attention"
+      ],
+      [
+        "linear_attention",
+        "linear_attention",
+        "full_attention"
+      ]
+    ],
+    "text_config.full_attention_interval": [
+      4,
+      3
+    ],
+    "vision_config.depth": [
+      27,
+      1
+    ]
+  },
+  "files": {
+    "config.json": {
+      "bytes": 2878,
+      "sha256": "52b153cba1db865486454f8173d80941480d2c9b88a08fa4d39d4fe312d19be8"
+    },
+    "tokenizer.json": {
+      "bytes": 12809320,
+      "sha256": "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3"
+    },
+    "tokenizer_config.json": {
+      "bytes": 17928,
+      "sha256": "b11349aafa7cdc6a320767cf7ceb29ed82f7eda5d65e8e0819e76f0ce947bf27"
+    },
+    "vocab.json": {
+      "bytes": 6722759,
+      "sha256": "ce99b4cb2983d118806ce0a8b777a35b093e2000a503ebde25853284c9dfa003"
+    },
+    "merges.txt": {
+      "bytes": 3353259,
+      "sha256": "a9d356d7bdf1ef4949e3e748e95b8e10ad9d4e2e838eddc38a0a7b6b94d1db8d"
+    },
+    "chat_template.jinja": {
+      "bytes": 8952,
+      "sha256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041"
+    },
+    "generation_config.json": {
+      "bytes": 202,
+      "sha256": "e70c136c1b78ddc1fb0905bac8e733a4dc448d4f852a5dd75143fffc70be550e"
+    },
+    "preprocessor_config.json": {
+      "bytes": 390,
+      "sha256": "27225450ac9c6529872ee1924fcb0962ff5634834f817040f444118116f4e516"
+    },
+    "video_preprocessor_config.json": {
+      "bytes": 385,
+      "sha256": "7768af27c1fafa9cc9011c1dc20067e03f8915e03b63504550e11d5066986d13"
+    },
+    "configuration.json": {
+      "bytes": 29,
+      "sha256": "8fa209ef18ac53dea0c47cf8d6f4e92c907565a4971bee413c1772e314a251fa"
+    },
+    "LICENSE": {
+      "bytes": 3220,
+      "sha256": "465dcafcac7d3542a0cfc150fc550e0b7228c22ee68c8f1f81db942e7c658cb4"
+    }
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "source": "/mxstorage/pde_ai/models/llm/Qwen/Qwen3.8-Flash-Next",
+  "method": "Only safetensors JSON headers read. No tensor payloads read or copied.",
+  "tensor_counts": {
+    "text_other": 77,
+    "vision": 21,
+    "ple": 137,
+    "mtp": 31
+  },
+  "bytes": {
+    "text_other": 18106774912,
+    "vision": 105407904,
+    "ple": 102466171160,
+    "mtp": 5214301696
+  },
+  "GiB": {
+    "text_other": 16.863248229026794,
+    "vision": 0.0981687605381012,
+    "ple": 95.42905833572149,
+    "mtp": 4.856196880340576
+  },
+  "retained_structure_total_GiB": 117.24667220562696,
+  "main_without_mtp_GiB": 112.39047532528639,
+  "ple_checkpoint_shards": 128,
+  "ple_checkpoint_total_rows": 320001536,
+  "ple_checkpoint_head_dim": [
+    160
+  ],
+  "limitations": "Source storage tensor bytes only; not measured runtime GPU memory, not weight extraction."
+}

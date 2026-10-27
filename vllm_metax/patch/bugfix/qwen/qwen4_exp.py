@@ -2,33 +2,20 @@
 # 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
 #
 # -----------------------------------------------------------------------------
-# Note: Select MetaX Qwen4 config subclasses to normalize the checkpoint layer
-#     alias "qwen_sparse_attention" to "full_attention" before upstream config
-#     validation. Append startup compilation for loaded MetaX QSA layers because
+# Note: Append startup compilation for loaded MetaX QSA layers because
 #     upstream QSA warmup discovers only vllm.models.qwen4_exp.nvidia modules.
+#     Transformers owns Qwen4 configs and normalizes the legacy layer alias;
+#     the retired local config module must not be imported during startup.
 #
-# Affected versions: Source-reviewed against vLLM 0.30.0 (ced6857afa0e),
-#     2026-10-16; applies to Qwen4 checkpoints using the alias and MetaX QSA models.
+# Affected versions: vLLM 0.32.0 (5df63a7203cd), MetaX QSA models.
 #
-# Remove at: Remove the config override when upstream normalizes the alias for
-#     this model path, or migrate it when a public config-class override API is
-#     available. Remove the warmup wrapper when upstream startup warmup reaches
+# Remove at: Remove the warmup wrapper when upstream startup warmup reaches
 #     the MetaX QSA kernels through a supported registration hook.
 # -----------------------------------------------------------------------------
-"""Qwen4 checkpoint config compatibility and MetaX QSA startup compilation."""
+"""MetaX QSA startup compilation with Transformers-owned Qwen4 configs."""
 
 import sys
 from vllm_metax.patch.utils import PATCH_MARKER, patch
-from vllm.transformers_utils.config import _CONFIG_REGISTRY
-from vllm_metax.models.qwen4_exp.config import Qwen4ExpConfig, Qwen4ExpTextConfig
-
-# /-------------------- MetaX Modification --------------------\
-# HFConfigParser registers classes from this table with exist_ok=True during
-# loading. AutoConfig.register / _register_config_class alone would be overwritten
-# by that registration, so replace both the outer and standalone text configs.
-# The outer MetaX config also selects the MetaX text class for nested text_config.
-_CONFIG_REGISTRY.update(qwen4_exp=Qwen4ExpConfig, qwen4_exp_text=Qwen4ExpTextConfig)
-# \-------------------- MetaX Modification --------------------/
 
 _WARMUP_TARGET = "vllm.model_executor.warmup.kernel_warmup.kernel_warmup"
 
