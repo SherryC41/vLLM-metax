@@ -295,7 +295,7 @@ def _ple_gate_fake(
 
 
 direct_register_custom_op(
-    op_name="qwen4_exp_ple_gate",
+    op_name="mx_qwen4_exp_ple_gate",
     op_func=_ple_gate,
     mutates_args=[],
     fake_impl=_ple_gate_fake,
@@ -311,7 +311,7 @@ def ple_gate(
     norm_conv_w: torch.Tensor,
     eps: float,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    return torch.ops.vllm.qwen4_exp_ple_gate(
+    return torch.ops.vllm.mx_qwen4_exp_ple_gate(
         key, value, hidden, norm_key_w, norm_query_w, norm_conv_w, eps
     )
 
