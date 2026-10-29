@@ -53,7 +53,7 @@ class MacaAutoAWQConfig(AutoAWQConfig):
             if is_layer_skipped(
                 prefix,
                 getattr(self, "modules_to_not_convert", []),
-                skip_with_substr=True,
+                match_mode="substring",
             ):
                 return UnquantizedFusedMoEMethod(layer.moe_config)
             # Lazy import to avoid circular import.
