@@ -138,7 +138,7 @@ def _repoint_loaded_aliases(
     when all_reduce_utils was imported first during model-module initialization.
     """
     for module_name, module in list(sys.modules.items()):
-        if module is None or not module_name.startswith("vllm."):
+        if module is None or not module_name.startswith("vllm"):
             continue
         if vars(module).get(attribute_name, _MISSING) is original:
             full_target_name = f"{module_name}.{attribute_name}"

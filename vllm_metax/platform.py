@@ -85,6 +85,9 @@ def _get_backend_priorities(
     device_capability: DeviceCapability,
     num_heads: int | None = None,
     kv_cache_dtype: "CacheDType | None" = None,
+    use_non_causal: bool = False,
+    head_size: int | None = None,
+    use_mm_prefix: bool = False,
 ) -> list[AttentionBackendEnum]:
     """Get backend priorities with lazy import to avoid circular dependency."""
     from vllm.v1.attention.backends.registry import AttentionBackendEnum
@@ -101,8 +104,8 @@ def _get_backend_priorities(
     else:
         return [
             AttentionBackendEnum.FLASH_ATTN,
-            AttentionBackendEnum.FLASHINFER,
             AttentionBackendEnum.TRITON_ATTN,
+            AttentionBackendEnum.FLASHINFER,
             AttentionBackendEnum.FLEX_ATTENTION,
             AttentionBackendEnum.TURBOQUANT,
         ]
@@ -337,19 +340,21 @@ class MacaPlatformBase(Platform):
                 model_config.enforce_eager if model_config is not None else None,
             )
 
-        scheduler_config = vllm_config.scheduler_config
+        # --------------------------------------------------------
         # Note: model_config may be None during testing
         if (
             model_config is not None
             and model_config.is_mm_prefix_lm
-            and scheduler_config.is_multimodal_model
-            and not scheduler_config.disable_chunked_mm_input
+            and model_config.hf_config.model_type == "gemma4"
         ):
             logger.warning(
-                "Forcing --disable_chunked_mm_input for models "
-                "with multimodal-bidirectional attention."
+                "Forcing disable mm_prefix for gemma4 "
+                "since we don't support multimodal-bidirectional "
+                "attention."
             )
-            scheduler_config.disable_chunked_mm_input = True
+            model_config.is_mm_prefix_lm = False
+            # if attention_config:= vllm_config.attention_config:
+            #     attention_config.backend = AttentionBackendEnum.FLASH_ATTN
 
         # -------------------------------------------------------
         # switch cumem to macamem for Maca platform
@@ -370,6 +375,9 @@ class MacaPlatformBase(Platform):
                 "vllm::mx_sparse_attn_indexer_int8"
             )
             compilation_config._attention_ops.append("vllm::mx_deepseek_v4_attention")
+            compilation_config._attention_ops.append(
+                "vllm::mx_sparse_attn_indexer_kpool"
+            )
 
         # -------------------------------------------------------
         # Disable cascade attention for Maca platform currently
@@ -438,7 +446,13 @@ class MacaPlatformBase(Platform):
         invalid_reasons: dict[AttentionBackendEnum, tuple[int, list[str]]] = {}
 
         backend_priorities = _get_backend_priorities(
-            attn_selector_config.use_mla, device_capability, num_heads=num_heads
+            attn_selector_config.use_mla,
+            device_capability,
+            num_heads=num_heads,
+            kv_cache_dtype=attn_selector_config.kv_cache_dtype,
+            use_non_causal=attn_selector_config.use_non_causal,
+            head_size=attn_selector_config.head_size,
+            use_mm_prefix=attn_selector_config.use_mm_prefix,
         )
         for priority, backend in enumerate(backend_priorities):
             try:
@@ -448,6 +462,9 @@ class MacaPlatformBase(Platform):
                     **attn_selector_config._asdict(),
                 )
             except ImportError:
+                logger.info(
+                    "Attention backend %s is unavailable", backend.name, exc_info=True
+                )
                 invalid_reasons_i = ["ImportError"]
             if invalid_reasons_i:
                 invalid_reasons[backend] = (priority, invalid_reasons_i)

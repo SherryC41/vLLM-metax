@@ -308,7 +308,7 @@ class Glm5NextIndexerBackend(MacaDeepseekV32IndexerBackend):
         return [index_kpool * n for n in get_paged_mqa_page_sizes()]
 
 
-class KpoolTailBackend(MacaDeepseekV32IndexerBackend):
+class MacaKpoolTailBackend(MacaDeepseekV32IndexerBackend):
     """Storage-only backend for the GLM-5.3-Flash kpool tail cache."""
 
     @classmethod

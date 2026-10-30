@@ -13,6 +13,7 @@ from vllm.model_executor.layers.mhc import (
     MHCFusedPostPreOp as _vllm_MHCFusedPostPreOp,
     HCHeadOp as _vllm_HCHeadOp,
 )
+import vllm_metax.model_executor.kernels.mhc.tilelang  # noqa: F401
 
 HAS_TILELANG_MHC = True
 
